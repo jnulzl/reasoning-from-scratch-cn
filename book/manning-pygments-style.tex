@@ -1,0 +1,110 @@
+% =============================================================================
+%  原书《Build a Reasoning Model (From Scratch)》代码配色（实测）
+%  默认字色 #231F20 · 关键字/括号 #1155CC · 字符串 #960000 · 数字 #2FB41D · 注释 #636466
+%  原书代码一律不加粗、不倾斜，故这里不设 \PYG@bf / \PYG@it。
+%  头尾两段原样取自 minted 生成的 default 样式定义，仅替换中部各 token 的颜色。
+%  由 book/ccs.tex 读入并注册为 minted 样式 "manning"。
+% =============================================================================
+\makeatletter
+\def\PYG@reset{\let\PYG@it=\relax \let\PYG@bf=\relax%
+    \let\PYG@ul=\relax \let\PYG@tc=\relax%
+    \let\PYG@bc=\relax \let\PYG@ff=\relax}
+\def\PYG@tok#1{\csname PYG@tok@#1\endcsname}
+\def\PYG@toks#1+{\ifx\relax#1\empty\else%
+    \PYG@tok{#1}\expandafter\PYG@toks\fi}
+\def\PYG@do#1{\PYG@bc{\PYG@tc{\PYG@ul{%
+    \PYG@it{\PYG@bf{\PYG@ff{#1}}}}}}}
+\def\PYG#1#2{\PYG@reset\PYG@toks#1+\relax+\PYG@do{#2}}
+
+
+\@namedef{PYG@tok@bp}{\def\PYG@tc##1{\textcolor[HTML]{231F20}{##1}}}
+\@namedef{PYG@tok@c}{\def\PYG@tc##1{\textcolor[HTML]{636466}{##1}}}
+\@namedef{PYG@tok@c1}{\def\PYG@tc##1{\textcolor[HTML]{636466}{##1}}}
+\@namedef{PYG@tok@ch}{\def\PYG@tc##1{\textcolor[HTML]{636466}{##1}}}
+\@namedef{PYG@tok@cm}{\def\PYG@tc##1{\textcolor[HTML]{636466}{##1}}}
+\@namedef{PYG@tok@cp}{\def\PYG@tc##1{\textcolor[HTML]{636466}{##1}}}
+\@namedef{PYG@tok@cpf}{\def\PYG@tc##1{\textcolor[HTML]{636466}{##1}}}
+\@namedef{PYG@tok@cs}{\def\PYG@tc##1{\textcolor[HTML]{636466}{##1}}}
+\@namedef{PYG@tok@dl}{\def\PYG@tc##1{\textcolor[HTML]{960000}{##1}}}
+\@namedef{PYG@tok@err}{\def\PYG@tc##1{\textcolor[HTML]{231F20}{##1}}}
+\@namedef{PYG@tok@fm}{\def\PYG@tc##1{\textcolor[HTML]{231F20}{##1}}}
+\@namedef{PYG@tok@gd}{\def\PYG@tc##1{\textcolor[HTML]{231F20}{##1}}}
+\@namedef{PYG@tok@ge}{\def\PYG@tc##1{\textcolor[HTML]{231F20}{##1}}}
+\@namedef{PYG@tok@ges}{\def\PYG@tc##1{\textcolor[HTML]{231F20}{##1}}}
+\@namedef{PYG@tok@gh}{\def\PYG@tc##1{\textcolor[HTML]{231F20}{##1}}}
+\@namedef{PYG@tok@gi}{\def\PYG@tc##1{\textcolor[HTML]{231F20}{##1}}}
+\@namedef{PYG@tok@go}{\def\PYG@tc##1{\textcolor[HTML]{231F20}{##1}}}
+\@namedef{PYG@tok@gp}{\def\PYG@tc##1{\textcolor[HTML]{231F20}{##1}}}
+\@namedef{PYG@tok@gr}{\def\PYG@tc##1{\textcolor[HTML]{231F20}{##1}}}
+\@namedef{PYG@tok@gs}{\def\PYG@tc##1{\textcolor[HTML]{231F20}{##1}}}
+\@namedef{PYG@tok@gt}{\def\PYG@tc##1{\textcolor[HTML]{231F20}{##1}}}
+\@namedef{PYG@tok@gu}{\def\PYG@tc##1{\textcolor[HTML]{231F20}{##1}}}
+\@namedef{PYG@tok@il}{\def\PYG@tc##1{\textcolor[HTML]{2FB41D}{##1}}}
+\@namedef{PYG@tok@k}{\def\PYG@tc##1{\textcolor[HTML]{1155CC}{##1}}}
+\@namedef{PYG@tok@kc}{\def\PYG@tc##1{\textcolor[HTML]{1155CC}{##1}}}
+\@namedef{PYG@tok@kd}{\def\PYG@tc##1{\textcolor[HTML]{1155CC}{##1}}}
+\@namedef{PYG@tok@kn}{\def\PYG@tc##1{\textcolor[HTML]{1155CC}{##1}}}
+\@namedef{PYG@tok@kp}{\def\PYG@tc##1{\textcolor[HTML]{1155CC}{##1}}}
+\@namedef{PYG@tok@kr}{\def\PYG@tc##1{\textcolor[HTML]{1155CC}{##1}}}
+\@namedef{PYG@tok@kt}{\def\PYG@tc##1{\textcolor[HTML]{1155CC}{##1}}}
+\@namedef{PYG@tok@kw}{\def\PYG@tc##1{\textcolor[HTML]{1155CC}{##1}}}
+\@namedef{PYG@tok@m}{\def\PYG@tc##1{\textcolor[HTML]{2FB41D}{##1}}}
+\@namedef{PYG@tok@mb}{\def\PYG@tc##1{\textcolor[HTML]{2FB41D}{##1}}}
+\@namedef{PYG@tok@mf}{\def\PYG@tc##1{\textcolor[HTML]{2FB41D}{##1}}}
+\@namedef{PYG@tok@mh}{\def\PYG@tc##1{\textcolor[HTML]{2FB41D}{##1}}}
+\@namedef{PYG@tok@mi}{\def\PYG@tc##1{\textcolor[HTML]{2FB41D}{##1}}}
+\@namedef{PYG@tok@mo}{\def\PYG@tc##1{\textcolor[HTML]{2FB41D}{##1}}}
+\@namedef{PYG@tok@na}{\def\PYG@tc##1{\textcolor[HTML]{231F20}{##1}}}
+\@namedef{PYG@tok@nb}{\def\PYG@tc##1{\textcolor[HTML]{231F20}{##1}}}
+\@namedef{PYG@tok@nc}{\def\PYG@tc##1{\textcolor[HTML]{231F20}{##1}}}
+\@namedef{PYG@tok@nd}{\def\PYG@tc##1{\textcolor[HTML]{231F20}{##1}}}
+\@namedef{PYG@tok@ne}{\def\PYG@tc##1{\textcolor[HTML]{231F20}{##1}}}
+\@namedef{PYG@tok@nf}{\def\PYG@tc##1{\textcolor[HTML]{231F20}{##1}}}
+\@namedef{PYG@tok@ni}{\def\PYG@tc##1{\textcolor[HTML]{231F20}{##1}}}
+\@namedef{PYG@tok@nl}{\def\PYG@tc##1{\textcolor[HTML]{231F20}{##1}}}
+\@namedef{PYG@tok@nn}{\def\PYG@tc##1{\textcolor[HTML]{231F20}{##1}}}
+\@namedef{PYG@tok@no}{\def\PYG@tc##1{\textcolor[HTML]{231F20}{##1}}}
+\@namedef{PYG@tok@nt}{\def\PYG@tc##1{\textcolor[HTML]{231F20}{##1}}}
+\@namedef{PYG@tok@nv}{\def\PYG@tc##1{\textcolor[HTML]{231F20}{##1}}}
+\@namedef{PYG@tok@o}{\def\PYG@tc##1{\textcolor[HTML]{231F20}{##1}}}
+\@namedef{PYG@tok@ow}{\def\PYG@tc##1{\textcolor[HTML]{1155CC}{##1}}}
+\@namedef{PYG@tok@p}{\def\PYG@tc##1{\textcolor[HTML]{1155CC}{##1}}}
+\@namedef{PYG@tok@s}{\def\PYG@tc##1{\textcolor[HTML]{960000}{##1}}}
+\@namedef{PYG@tok@s1}{\def\PYG@tc##1{\textcolor[HTML]{960000}{##1}}}
+\@namedef{PYG@tok@s2}{\def\PYG@tc##1{\textcolor[HTML]{960000}{##1}}}
+\@namedef{PYG@tok@sa}{\def\PYG@tc##1{\textcolor[HTML]{1155CC}{##1}}}
+\@namedef{PYG@tok@sb}{\def\PYG@tc##1{\textcolor[HTML]{960000}{##1}}}
+\@namedef{PYG@tok@sc}{\def\PYG@tc##1{\textcolor[HTML]{960000}{##1}}}
+\@namedef{PYG@tok@sd}{\def\PYG@tc##1{\textcolor[HTML]{960000}{##1}}}
+\@namedef{PYG@tok@se}{\def\PYG@tc##1{\textcolor[HTML]{960000}{##1}}}
+\@namedef{PYG@tok@sh}{\def\PYG@tc##1{\textcolor[HTML]{960000}{##1}}}
+\@namedef{PYG@tok@si}{\def\PYG@tc##1{\textcolor[HTML]{231F20}{##1}}}
+\@namedef{PYG@tok@sr}{\def\PYG@tc##1{\textcolor[HTML]{960000}{##1}}}
+\@namedef{PYG@tok@ss}{\def\PYG@tc##1{\textcolor[HTML]{960000}{##1}}}
+\@namedef{PYG@tok@sx}{\def\PYG@tc##1{\textcolor[HTML]{960000}{##1}}}
+\@namedef{PYG@tok@vc}{\def\PYG@tc##1{\textcolor[HTML]{231F20}{##1}}}
+\@namedef{PYG@tok@vg}{\def\PYG@tc##1{\textcolor[HTML]{231F20}{##1}}}
+\@namedef{PYG@tok@vi}{\def\PYG@tc##1{\textcolor[HTML]{231F20}{##1}}}
+\@namedef{PYG@tok@vm}{\def\PYG@tc##1{\textcolor[HTML]{231F20}{##1}}}
+\@namedef{PYG@tok@w}{\def\PYG@tc##1{\textcolor[HTML]{231F20}{##1}}}
+
+\def\PYGZbs{\char`\\}
+\def\PYGZus{\char`\_}
+\def\PYGZob{\char`\{}
+\def\PYGZcb{\char`\}}
+\def\PYGZca{\char`\^}
+\def\PYGZam{\char`\&}
+\def\PYGZlt{\char`\<}
+\def\PYGZgt{\char`\>}
+\def\PYGZsh{\char`\#}
+\def\PYGZpc{\char`\%}
+\def\PYGZdl{\char`\$}
+\def\PYGZhy{\char`\-}
+\def\PYGZsq{\char`\'}
+\def\PYGZdq{\char`\"}
+\def\PYGZti{\char`\~}
+% for compatibility with earlier versions
+\def\PYGZat{@}
+\def\PYGZlb{[}
+\def\PYGZrb{]}
+\makeatother

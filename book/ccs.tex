@@ -5,7 +5,7 @@
 %      正文章节：book/content/<类别>/<编号>.tex，由 book/index.tex 中的 \myChapter 等命令加载
 % =============================================================================
 
-\documentclass[12pt,openany,oneside,UTF8]{book}
+\documentclass[12bp,openany,oneside,UTF8]{book}
 \interfootnotelinepenalty=10000
 
 % -----------------------------------------------------------------------------
@@ -34,81 +34,111 @@
 % 在导言区（Preamble）添加：
 \usepackage[export]{adjustbox} % 注意必须加上 [export] 参数
 
-% 页面尺寸：沿用《从零构建推理模型》原书（Manning 7.375in × 9.25in）
+% 页面尺寸：与原书实测一致 —— 531.36bp × 628.83bp（7.380in × 8.734in）
+% 版心宽 375bp；左右边距取原书奇偶页实测平均值（原书有 ±4.5bp 的奇偶偏移）
 % 若想换成模板默认的 A4，把下面这行替换为：\usepackage[a4paper,left=2.5cm,right=2cm,top=2.54cm,bottom=2.54cm]{geometry}
 \usepackage[
-  paperwidth=7.375in, paperheight=9.25in,
-  left=0.75in, right=0.65in, top=0.65in, bottom=0.75in,
-  footskip=0.28in]{geometry}
+  paperwidth=531.36bp, paperheight=628.83bp,
+  left=97.5bp, right=58.86bp,
+  top=50.64bp, bottom=25.83bp,     % 使正文首/末行基线落在原书的 y=60.6 / y=603.0
+  headheight=15bp, headsep=13.74bp,% 页眉基线落在 y=33.30（原书实测）
+  footskip=12bp]{geometry}
 
 % -----------------------------------------------------------------------------
 %  ★★★ 字体设置：想要换字体、改字号，只改这一段 ★★★
 % -----------------------------------------------------------------------------
 \usepackage{fontspec}
 \usepackage[fontset=none]{ctex}          % 只借用 ctex 的中文标题名与 \zihao 字号，字体由下面手工指定
-\usepackage[fontsize=10pt]{fontsize}     % 正文字号（与原书一致：原书正文实测 10pt；模板用 11pt）
+\usepackage[fontsize=10bp]{fontsize}     % 正文字号（与原书一致：原书正文实测 10bp）
+\linespread{1.0833}                      % 正文行距 13bp（原书实测 10bp/13bp）
 
 % 中文字体（本机未装思源宋体，用华文宋体/微软雅黑代替；都是 TrueType，可正常嵌入 PDF）
 % 备选：Source Han Serif / SourceHanSerifSC-SemiBold（模板默认）、Noto Serif CJK SC、SimSun
 \setCJKmainfont[AutoFakeBold=true,AutoFakeSlant=true]{STSong}            % 中文正文（衬线）
 \setCJKsansfont[AutoFakeBold=true,AutoFakeSlant=true]{Microsoft YaHei}   % 中文标题（无衬线）
 \setCJKmonofont[AutoFakeBold=true,AutoFakeSlant=true]{Microsoft YaHei}   % 代码块中的中文注释
-% 拉丁字体（模板默认 Hack；如需完全照模板可把 Georgia 换成 Hack）
-\setmainfont{Georgia}                    % 拉丁正文
-\setsansfont{Microsoft YaHei}            % 拉丁无衬线
-\setmonofont{Consolas}                   % 拉丁等宽（代码）
+% 拉丁字体：原书正文 New Baskerville（商用字体）以 Cambria 代替 ——
+%   关键原因是原书数字为「等高数字」（lining figures），Georgia 是旧式数字
+%   （数字会降到基线以下），实测 Cambria 的数字宽高比与原书最接近
+%   （0.496/0.671 em vs 原书 0.484/0.667 em）
+\setmainfont{Cambria}[BoldFont=*-Bold, ItalicFont=*-Italic, BoldItalicFont=*-BoldItalic]
+\setsansfont[BoldFont={Franklin Gothic Medium}]{Franklin Gothic Medium}   % 拉丁标题
+% 代码字体：与原书一致的 JetBrains Mono NL（无连字版），随项目放在 fonts/ 目录
+\setmonofont{JetBrainsMonoNL}[
+  Path=fonts/, Extension=.ttf,
+  UprightFont=*-Regular, BoldFont=*-Bold,
+  ItalicFont=*-Italic, BoldItalicFont=*-BoldItalic]
 \newfontfamily\codehan{Microsoft YaHei}  % 备用的中英文混排字体
 % -----------------------------------------------------------------------------
 
 % -----------------------------------------------------------------------------
 %  版面与段落
 % -----------------------------------------------------------------------------
-\definecolor{titlecolor}{HTML}{1F2A44}   % 标题色（偏深蓝，接近原 PDF 的 Manning 藏青）
-\definecolor{codeframe}{HTML}{C8CDD4}
+\definecolor{ink}{HTML}{231F20}          % 正文墨色（原书实测，非纯黑）
+\definecolor{chapterblue}{HTML}{476B85}  % 标题钢蓝（原书实测）
+\definecolor{listingbar}{HTML}{679CC3}   % 代码清单标题条蓝（原书实测）
+\definecolor{chapgray}{HTML}{D1D3D4}     % 章首巨型数字的浅灰（原书实测）
+\definecolor{cream}{HTML}{F7F4E9}        % 概念盒米色底（原书实测）
+\definecolor{codeframe}{HTML}{C8CDD4}    % （保留给旧样式引用）
 \definecolor{codeback}{HTML}{F5F8FC}
 \definecolor{codebacktitle}{HTML}{E6EBF2}
 
 \setlength{\parindent}{2em}                      % 中文书籍惯例：首行缩进两字
-\setlength{\parskip}{2pt plus 1pt minus 1pt}
+\setlength{\parskip}{0bp plus 0bp minus 0bp}     % 原书段落之间无额外间距
 \raggedbottom
 
-\setlist[itemize,enumerate,description]{nosep, topsep=4pt, partopsep=0pt, parsep=0pt, leftmargin=2em}
+% 全书正文墨色（标题、链接等会各自覆盖）
+\AtBeginDocument{\color{ink}}
+
+\setlist[itemize,enumerate,description]{nosep, topsep=4bp, partopsep=0bp, parsep=0bp, leftmargin=2em}
 
 % -----------------------------------------------------------------------------
 %  代码高亮：minted（需要 Pygments + xelatex -shell-escape）
+%  原书代码块无外框、无底色、无行号，8bp 等宽、行距 10.11bp，左缘与正文对齐；
+%  清单标题条为蓝底 #679CC3 + 白字 9bp Franklin Gothic。
 % -----------------------------------------------------------------------------
 \usepackage[cache=true]{minted}
+\newcommand{\codefont}{\fontsize{8bp}{10.11bp}\selectfont}
 \setminted{obeytabs, tabsize=2, breaklines=true, breakanywhere=true,
-           fontsize=\small, autogobble=true,
-           linenos, numbersep=7pt, numberblanklines=false}
+           fontsize=\codefont, autogobble=true}
+% 注册原书配色：先把它读进 \minted@styledef@manning，minted 就不会再去找 Python 样式。
+% 注意：minted 只有在 \minted@defstyle@load 里才会调 \minted@detectconfig 初始化缓存路径，
+% 我们绕过了那条路，所以这里必须显式补一次。
+\makeatletter
+\CatchFileDef{\minted@styledef@manning}{book/manning-pygments-style.tex}%
+  {\minted@standardcatcodes\endlinechar=-1}%
+\minted@detectconfig
+\makeatother
+\setminted{style=manning}
 \usepackage[most]{tcolorbox}
 \tcbuselibrary{breakable, minted, skins}
 
-% 无标题代码块
+% 代码块仍用 tcblisting（verbatim 环境无法包在自定义环境里，且它支持跨页）。
+% 只是把外观改成与原书一致：无外框、无底色、无行号，代码左缘与正文对齐。
+% 注意：tcolorbox 的 minted 库默认强制 fontsize=\small，必须显式覆盖。
 \newtcblisting{codebox}{
-  listing engine=minted,
-  minted language=python,
-  listing only,
-  size=minimal, arc=0.3mm, breakable, enhanced jigsaw,
-  colframe=codeframe, boxrule=0.4pt, colback=codeback, coltext=black,
-  left=11mm, right=3mm, top=1.5mm, bottom=1mm,
-  overlay={\begin{tcbclipinterior}\fill[black!5](frame.south west)
-    rectangle([xshift=9mm]frame.north west);\end{tcbclipinterior}},
+  listing engine=minted, minted language=python, listing only,
+  size=minimal, arc=0bp, breakable, enhanced jigsaw,
+  colframe=white, colback=white, boxrule=0bp,
+  left=0bp, right=0bp, top=1.5bp, bottom=1.5bp, boxsep=0bp,
+  before skip=7bp, after skip=7bp,
+  minted options={fontsize=\codefont, tabsize=2, obeytabs=true,
+                  breaklines=true, breakanywhere=true, autogobble=true},
 }
-% 带标题代码块（调用方式：\begin{codeboxt}{代码清单 3.1 加载预训练模型}）
+% 带标题代码块（调用方式：\begin{codeboxt}{代码清单 3.1 提取答案框}）
+% 标题条与原书一致：钢蓝底 #679CC3 + 白字 9bp，条高 15bp，左内缩 12bp
 \newtcblisting{codeboxt}[1]{
-  listing engine=minted,
-  minted language=python,
-  listing only,
-  size=title, arc=0.3mm, breakable, enhanced jigsaw,
-  colframe=codeframe, boxrule=0.4pt, colback=codeback, coltext=black,
-  left=11mm, right=3mm, top=1.5mm, bottom=1mm,
-  lefttitle=2mm, righttitle=2mm, toptitle=0.8mm, bottomtitle=0.8mm,
-  overlay={\begin{tcbclipinterior}\fill[black!5](frame.south west)
-    rectangle([xshift=9mm]frame.north west);\end{tcbclipinterior}},
+  listing engine=minted, minted language=python, listing only,
+  size=title, arc=0bp, breakable, enhanced jigsaw,
+  colframe=white, colback=white, boxrule=0bp,
+  left=0bp, right=0bp, top=1.5bp, bottom=1.5bp, boxsep=0bp,
+  lefttitle=12bp, righttitle=2bp, toptitle=2bp, bottomtitle=2bp,
   title={#1},
-  colbacktitle=codebacktitle, coltitle=black!80!white,
-  fonttitle=\sffamily\small, fontupper=\small,
+  colbacktitle=listingbar, coltitle=white,
+  fonttitle=\sffamily\fontsize{9bp}{11bp}\selectfont,
+  before skip=7bp, after skip=7bp,
+  minted options={fontsize=\codefont, tabsize=2, obeytabs=true,
+                  breaklines=true, breakanywhere=true, autogobble=true},
 }
 
 % -----------------------------------------------------------------------------
@@ -145,12 +175,17 @@
 % -----------------------------------------------------------------------------
 \ExplSyntaxOn
 % 插图（不浮动，紧跟正文； caption 为图注文字）
+% 图注对齐原书：8bp 无衬线，左缘悬挂到页边距（比版心左缘突出 36bp），通栏两端对齐
 \NewDocumentCommand { \myGraphic } { mmm }
 {
+  \par\medskip\noindent
   \begin{center}
-    \includegraphics[width=#1\textwidth,height=0.86\textheight,keepaspectratio]{#2}\\[4pt]
-    {\small #3}
+    \includegraphics[width=#1\textwidth,height=0.86\textheight,keepaspectratio]{#2}
   \end{center}
+  \nopagebreak\vspace{3bp}\noindent
+  {\fontsize{8bp}{10.5bp}\selectfont
+   \hspace*{-36bp}\parbox{\dimexpr\textwidth+36bp\relax}{#3}}\par
+  \medskip
 }
 \ExplSyntaxOff
 
@@ -158,72 +193,137 @@
 \captionsetup[table]{labelformat=empty}
 
 % -----------------------------------------------------------------------------
-%  提示框（沿用模板的 myNotic / myTip / myWarning）
+%  提示框 / 侧栏（对齐原书版式）
+%  · 原书的 NOTE/TIP 是「无框缩进段落 + 钢蓝 8.5bp 小标签」，不是盒子
+%  · 原书的概念/侧栏盒是米色 #F7F4E9 满版心底、无描边，蓝标题 10.5bp，正文 9.5bp
 % -----------------------------------------------------------------------------
 \ExplSyntaxOn
+% NOTE / TIP / WARNING：无框，整段左缩进 12bp，标签用钢蓝小号无衬线
 \NewDocumentEnvironment { myNotic } { m }
-{ \begin { tcolorbox } [ breakable, enhanced~jigsaw, arc=0.3mm,
-    colback = blue!5!white, colframe=blue!55!black, boxrule=0.5pt,
-    fonttitle=\sffamily\bfseries, colbacktitle=blue!15!white, coltitle=black,
-    title={#1} ] }
-{ \end   { tcolorbox } }
+{ \par\medskip\begingroup
+    \setlength{\leftskip}{12bp}\setlength{\parindent}{0bp}%
+    {\color{chapterblue}\sffamily\fontsize{8.5bp}{11bp}\selectfont #1}%
+    \hspace{0.9em}\ignorespaces }
+{ \par\endgroup\medskip }
 
 \NewDocumentEnvironment { myTip } { m }
-{ \begin { tcolorbox } [ breakable, enhanced~jigsaw, arc=0.3mm,
-    colback = green!5!white, colframe=green!45!black, boxrule=0.5pt,
-    fonttitle=\sffamily\bfseries, colbacktitle=green!12!white, coltitle=black,
-    title={#1} ] }
-{ \end   { tcolorbox } }
+{ \par\medskip\begingroup
+    \setlength{\leftskip}{12bp}\setlength{\parindent}{0bp}%
+    {\color{chapterblue}\sffamily\fontsize{8.5bp}{11bp}\selectfont #1}%
+    \hspace{0.9em}\ignorespaces }
+{ \par\endgroup\medskip }
 
 \NewDocumentEnvironment { myWarning } { m }
-{ \begin { tcolorbox } [ breakable, enhanced~jigsaw, arc=0.3mm,
-    colback = red!5!white, colframe=red!55!black, boxrule=0.5pt,
-    fonttitle=\sffamily\bfseries, colbacktitle=red!12!white, coltitle=black,
-    title={#1} ] }
-{ \end   { tcolorbox } }
+{ \par\medskip\begingroup
+    \setlength{\leftskip}{12bp}\setlength{\parindent}{0bp}%
+    {\color{chapterblue}\sffamily\fontsize{8.5bp}{11bp}\selectfont #1}%
+    \hspace{0.9em}\ignorespaces }
+{ \par\endgroup\medskip }
 
-% 本书的正文侧栏（sidebar）：中性灰版式，同样可跨页
+% 概念 / 侧栏盒：米色满版心底 + 钢蓝标题
 \NewDocumentEnvironment { mySidebar } { m }
-{ \begin { tcolorbox } [ breakable, enhanced~jigsaw, arc=0.3mm,
-    colback = black!3!white, colframe=black!45!white, boxrule=0.5pt,
-    fonttitle=\sffamily\bfseries, colbacktitle=black!10!white, coltitle=black,
-    title={#1} ] }
-{ \end   { tcolorbox } }
+{ \par\medskip\noindent
+  \begin{tcolorbox}[enhanced~jigsaw, breakable, colback=cream, colframe=cream,
+      boxrule=0bp, arc=0bp, left=16bp, right=16bp, top=8bp, bottom=9bp,
+      boxsep=0bp, before~skip=0bp, after~skip=0bp]
+    {\color{chapterblue}\sffamily\fontsize{10.5bp}{13bp}\selectfont #1}%
+    \par\nopagebreak\vspace{5bp}%
+    \fontsize{9.5bp}{12.5bp}\selectfont
+}
+{ \end{tcolorbox}\par\medskip }
 
 % 没有小标题的侧栏
 \NewDocumentEnvironment { mySidebarBox } { }
-{ \begin { tcolorbox } [ breakable, enhanced~jigsaw, arc=0.3mm,
-    colback = black!3!white, colframe=black!45!white, boxrule=0.5pt ] }
-{ \end   { tcolorbox } }
+{ \par\medskip\noindent
+  \begin{tcolorbox}[enhanced~jigsaw, breakable, colback=cream, colframe=cream,
+      boxrule=0bp, arc=0bp, left=16bp, right=16bp, top=8bp, bottom=9bp,
+      boxsep=0bp, before~skip=0bp, after~skip=0bp]
+    \fontsize{9.5bp}{12.5bp}\selectfont
+}
+{ \end{tcolorbox}\par\medskip }
 
-% 章节内部的无编号小标题（不进目录）
+% 章首「本章内容」盒：原书为 251.43bp 宽的窄米色盒，左缘突出到 x=77.57（版心左 97.5）
+% 注意 tcolorbox 的 grow to left by 会「加宽」盒子，故 width = 251.43 - 19.93
+\NewDocumentEnvironment { myChapterIntro } { m }
+{ \par\vspace*{73.59bp}\noindent
+  \begin{tcolorbox}[enhanced~jigsaw, breakable, colback=cream, colframe=cream,
+      boxrule=0bp, arc=0bp, width=231.5bp, grow~to~left~by=19.93bp,
+      left=20bp, right=14bp, top=9bp, bottom=10bp, boxsep=0bp,
+      before~skip=0bp, after~skip=0bp]
+    {\color{chapterblue}\sffamily\fontsize{12bp}{15bp}\selectfont #1}%
+    \par\nopagebreak\vspace{6bp}%
+    \fontsize{9.8bp}{13.5bp}\selectfont
+}
+{ \end{tcolorbox}\par\bigskip }
+
+% 章节内部的无编号小标题（不进目录）：钢蓝无衬线 10.5bp，同原书盒标题
 \NewDocumentCommand { \mySamllsectionNoContent } { m }
-{ \par\vspace{0.35em}\noindent\textbf{\sffamily #1}\par\vspace{0.15em}\nopagebreak[4] }
+{ \par\vspace{0.9em}\noindent
+  {\color{chapterblue}\sffamily\fontsize{10.5bp}{13bp}\selectfont #1}%
+  \par\vspace{0.35em}\nopagebreak[4] }
 \NewDocumentCommand { \mySmallsection } { m }
 { \mySamllsectionNoContent { #1 } }
 \ExplSyntaxOff
 
 % -----------------------------------------------------------------------------
-%  标题样式
+%  标题样式（对齐原书：Franklin Gothic 系、钢蓝 #476B85、节号悬挂在左页边距）
+%  原书只有两级正文标题：节 12.5bp（带编号，编号悬挂）与小节 10.5bp（无编号）
 % -----------------------------------------------------------------------------
 \usepackage{titlesec}
-\titleformat{name=\chapter,numberless}[hang]
-  {\sffamily\bfseries\color{titlecolor}\zihao{2}}{}{0pt}{}
-\titlespacing*{name=\chapter,numberless}{0pt}{0pt}{1.4em}
+% ---------------------------------------------------------------------------
+%  章首装饰（原书实测，坐标均以「页面右上角」为原点，单位为 bp）
+%    巨型章号：225bp 斜体 #D1D3D4，基线 y=217.88、右缘 x=474.18（距右纸边 57.18）
+%    钢蓝横线：0.5bp #476B85，y=193.80、右缘 x=474.18、长 300bp
+%  章号变量特意不含 @：它在 \ExplSyntaxOn 段里被赋值、在 \makeatletter 段里被读取，
+%  若名字带 @ 会因两处的 catcode 不同而变成两个不同的宏（曾导致数字一直画不出来）。
+% ---------------------------------------------------------------------------
+\newcommand{\mychaptergiant}{}
+\newcommand{\mychapterset}[1]{\gdef\mychaptergiant{#1}}
+\newcommand{\mychapterclear}{\gdef\mychaptergiant{}}
+\newcommand{\chapterdecor}{%
+  \ifx\mychaptergiant\empty\else      % 与 \empty 比较「含义」，无需展开，空则整块不画
+    \begin{tikzpicture}[remember picture,overlay]
+      \node[anchor=base east, inner sep=0bp, outer sep=0bp]
+        at ([xshift=-37.18bp,yshift=-217.88bp]current page.north east)
+        {\fontsize{225bp}{225bp}\selectfont\itshape\color{chapgray}\mychaptergiant};
+      \draw[chapterblue, line width=0.5bp]
+        ([xshift=-57.18bp,yshift=-193.80bp]current page.north east) -- ++(-300bp,0);
+    \end{tikzpicture}%
+  \fi}
+\makeatletter
+% 注意：titlesec 只有在该命令「带编号」的格式也被定义时才会接管 chapter 机制，
+%      否则 name=\chapter,numberless 完全不生效（\chapter* 仍走 book.cls 默认 head）。
+\titleformat{\chapter}[display]
+  {\fontsize{30bp}{32bp}\selectfont\itshape\color{chapterblue}\raggedleft}
+  {\thechapter}{10bp}{}
+\titlespacing*{\chapter}{0bp}{10.89bp}{0bp}
+% 章名块固定高 64bp（= 2 行）且底部对齐：这样无论标题占 1 行还是 2 行，
+% 末行基线都恒定在原书的 y=181.55，章名下的钢蓝横线也就恒定在 y=193.80。
+\titleformat{name=\chapter,numberless}[display]
+  {\fontsize{30bp}{32bp}\selectfont\itshape\color{chapterblue}\raggedleft}
+  {}{0bp}{\chapterdecor\vbox to 64bp\bgroup\vfil}
+  [\egroup]
+\makeatother
+\titlespacing*{name=\chapter,numberless}{0bp}{10.89bp}{2.6em}
+% 节：12.5bp，编号悬挂在版心左侧、右缘距标题 15.5bp（原书实测）
 \titleformat{\section}
-  {\sffamily\bfseries\color{titlecolor}\zihao{3}}{\thesection\quad}{0pt}{}
+  {\fontsize{12.5bp}{15bp}\selectfont\color{chapterblue}\sffamily}
+  {\makebox[0bp][r]{\thesection\hspace{15.5bp}}}{0bp}{}
 \titleformat{name=\section,numberless}
-  {\sffamily\bfseries\color{titlecolor}\zihao{3}}{}{0pt}{}
-\titlespacing*{\section}{0pt}{1.6em}{0.5em}
+  {\fontsize{12.5bp}{15bp}\selectfont\color{chapterblue}\sffamily}{}{0bp}{}
+\titlespacing*{\section}{0bp}{1.7em}{0.55em}
+% 小节：10.5bp，无编号，整体左缩进 7.8bp（原书奇偶平均）
 \titleformat{\subsection}
-  {\sffamily\bfseries\color{titlecolor}\zihao{4}}{\thesubsection\quad}{0pt}{}
-\titlespacing*{\subsection}{0pt}{1.2em}{0.4em}
+  {\fontsize{10.5bp}{13bp}\selectfont\color{chapterblue}\sffamily}{}{0bp}{\hspace*{7.8bp}}
+\titleformat{name=\subsection,numberless}
+  {\fontsize{10.5bp}{13bp}\selectfont\color{chapterblue}\sffamily}{}{0bp}{\hspace*{7.8bp}}
+\titlespacing*{\subsection}{0bp}{1.15em}{0.35em}
 \titleformat{\subsubsection}
-  {\sffamily\bfseries\color{titlecolor}\zihao{-4}}{\thesubsubsection\quad}{0pt}{}
-\titlespacing*{\subsubsection}{0pt}{1em}{0.3em}
+  {\fontsize{10bp}{13bp}\selectfont\color{chapterblue}\sffamily}{}{0bp}{\hspace*{7.8bp}}
+\titlespacing*{\subsubsection}{0bp}{1em}{0.3em}
 
-\setcounter{secnumdepth}{4}
-\setcounter{tocdepth}{2}
+\setcounter{secnumdepth}{1}     % 只给「节」编号，小节不编号（对齐原书）
+\setcounter{tocdepth}{1}        % 目录与书签只到节（原书如此）
 
 % -----------------------------------------------------------------------------
 %  目录 / 书签 / 超链接
@@ -271,20 +371,29 @@
 \makeatother
 
 % -----------------------------------------------------------------------------
-%  页眉页脚：左侧书名，右侧当前章名，页脚居中页码
+%  页眉页脚（对齐原书）：正文页 = 页码在外侧 + 居中章名，无页脚、无横线；
+%  章首页 = 无页眉，页码居中于页脚
 % -----------------------------------------------------------------------------
 \usepackage{fancyhdr}
-\setlength{\headheight}{15pt}
+\setlength{\headheight}{15bp}
 \pagestyle{fancy}
 \fancyhf{}
-\fancyhead[L]{\small\sffamily\color{titlecolor} 从零构建推理模型}
-\fancyhead[R]{\small\sffamily\color{titlecolor} \nouppercase{\rightmark}}
-\fancyfoot[C]{\small\thepage}
-\renewcommand{\headrulewidth}{0.3pt}
-\renewcommand{\footrulewidth}{0pt}
-\fancypagestyle{plain}{\fancyhf{}\fancyfoot[C]{\small\thepage}%
-  \renewcommand{\headrulewidth}{0pt}}
-% 章名写入页眉标记
+% 原书页眉：章名居中于「整页」而非版心（版心中心 285bp vs 页面中心 265.68bp，差 19.32bp）
+% makebox[0pt][c] + 右侧等量留空 = 把居中点整体左移 19.32bp
+\fancyhead[C]{\makebox[0bp][c]{\color{ink}\sffamily\fontsize{9bp}{11bp}\selectfont
+  \leftmark\hspace*{38.64bp}}}
+\fancyhead[R]{\color{ink}\fontsize{9bp}{11bp}\selectfont\bfseries\thepage}
+\renewcommand{\headrulewidth}{0bp}
+\renewcommand{\footrulewidth}{0bp}
+% 章首页页码：原书基线 y=605.94、水平中心 x=276.18（用绝对 overlay，避免页脚盒高度影响基线）
+\fancypagestyle{plain}{\fancyhf{}%
+  \fancyfoot[C]{\begin{tikzpicture}[remember picture,overlay]%
+      \node[anchor=base, inner sep=0bp, outer sep=0bp]
+        at ([xshift=276.18bp, yshift=-605.94bp]current page.north west)
+        {\makebox[0bp][c]{\color{ink}\fontsize{9bp}{11bp}\selectfont\bfseries\thepage}};%
+    \end{tikzpicture}}%
+  \renewcommand{\headrulewidth}{0bp}}
+% 章名写入页眉标记（\chapter* 不触发 \chaptermark，必须在 \myChapter 里显式写标记）
 \newcommand{\chapmark}[1]{\markboth{#1}{#1}}
 
 % -----------------------------------------------------------------------------
@@ -321,14 +430,20 @@
 %  章节命令（对应模板的 \myChapter / \myPart；本书没有「部分」，并增加前言/附录两类）
 % -----------------------------------------------------------------------------
 \ExplSyntaxOn
-% 编号正文章节：\myChapter{章号}{标题}{文件}
+% 编号正文章节：\myChapter{章号}{标题}{文件} —— 章首有巨型浅灰数字与钢蓝横线
+% 标题里可用 \\ 手工断行（避免长章名折出「孤字」）；断行符在目录与页眉里会被替换成空格
+\tl_new:N \l__my_toctitle_tl
 \NewDocumentCommand { \myChapter } { mmm }
 {
   \setcounter{chapter}{#1}
   \setcounter{section}{0}
-  \chapter*{第~#1~章\quad #2}
-  \addcontentsline{toc}{chapter}{第~#1~章\quad #2}
-  \chapmark{第~#1~章\quad #2}
+  \mychapterset{#1}%
+  \tl_set:Nn \l__my_toctitle_tl { #2 }
+  \tl_replace_all:Nnn \l__my_toctitle_tl { \\ } { \space }
+  \chapmark{第~#1~章\quad \l__my_toctitle_tl}%  \chapter* 不触发 \chaptermark，必须自己写标记
+  \chapter*{#2}
+  \mychapterclear
+  \addcontentsline{toc}{chapter}{第~#1~章\quad \l__my_toctitle_tl}
   \subfile{#3}
 }
 % 附录：\myAppendix{序号 1..7}{标题}{文件}（自动显示为「附录 A/B/C…」）
@@ -336,6 +451,7 @@
 {
   \setcounter{chapter}{#1}
   \setcounter{section}{0}
+  \mychapterclear
   \chapter*{附录~\Alph{chapter}\quad #2}
   \addcontentsline{toc}{chapter}{附录~\Alph{chapter}\quad #2}
   \chapmark{附录~\Alph{chapter}\quad #2}
@@ -344,6 +460,7 @@
 % 前言类：进目录但无编号
 \NewDocumentCommand { \myFront } { mm }
 {
+  \mychapterclear
   \chapter*{#1}
   \addcontentsline{toc}{chapter}{#1}
   \chapmark{#1}
