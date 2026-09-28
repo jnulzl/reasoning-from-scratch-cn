@@ -1,0 +1,1297 @@
+\mySmallsection{本章内容}
+\begin{itemize}
+\item 提示 LLM 解释其推理过程，以提升答案准确率
+\item 修改文本生成函数，以产生多样化的回复
+\item 通过对多个回复进行采样来提升推理的可靠性
+\end{itemize}
+
+无需重新训练或修改模型本身，就能提升推理表现和答案准确率。如图 4.1 的概览所示，本章介绍两种推理时扩展（inference-time scaling）方法。这些方法在推理阶段、也就是模型生成文本时发挥作用。本章稍后你会看到，这两种方法都把前几章所用基础模型的准确率提升了一倍以上。
+
+在讨论图 4.1 所示的推理方法之前，我们先来看看什么是推理时扩展。
+
+\myGraphic{0.92}{images/CH04_F01_Raschka2.png}{图 4.1 本书所涵盖主题的示意图。本章聚焦推理时扩展技术，它们无需额外训练即可提升推理能力（第 3 阶段）。具体而言，本章扩展了文本生成函数，并实现了一种基于投票的方法来提升答案准确率。下一章将介绍另一种推理时扩展方法，即让模型迭代地改进自己的答案。}
+
+\section{推理时扩展简介}
+
+提升推理能力主要有两种策略：
+
+\begin{itemize}
+\item 增加训练计算量
+\item 增加推理计算量（也称推理时扩展或测试时扩展）
+\end{itemize}
+
+\begin{myWarning}{注意}
+ 在机器学习和 AI 中，“计算量（compute）”指的是训练或运行模型所需的计算资源。\end{myWarning}
+
+图 4.2 展示了这两种方法，从图中看，我们似乎既可以通过增加训练时计算量、\emph{也}可以通过增加推理时计算量来提升推理能力。而在现实中，LLM 通常是把大量训练时计算（后续章节的主题）\emph{与}增加的推理时计算（本章的主题）结合起来以提升推理能力。
+
+\myGraphic{0.92}{images/CH04_F02_Raschka2.png}{图 4.2 推理时扩展（本章讨论）与训练时扩展（第 6～8 章讨论）的对比。两种方法都通过使用更多计算量来提升准确率，但推理时扩展是即时进行的，不改变模型的权重参数。这两幅图受 OpenAI 介绍其首个推理模型的文章启发（\href{https://openai.com/index/learning-to-reason-with-llms/}{https://openai.com/index/learning-to-reason-with-llms/}）。}
+
+\emph{推理时计算扩展}（也称\emph{推理时扩展}或\emph{测试时计算扩展}）指的是在模型训练完成之后，于生成答案时增加计算量，以提升回复质量。我们不改变模型的权重，而是让训练好的模型对每个问题做更多工作，例如生成更多词元并“思考”得更久、采样多个答案，或逐步改进自己的答案。
+
+本书将聚焦三种实用且基础的推理时技术（如图 4.3 所示）：
+
+\begin{itemize}
+\item 方法 1：扩展\emph{思维链（chain-of-thought, CoT）}回复，提示模型解释其推理过程。这种简单的技术能大幅提升准确率。
+\item 方法 2：通过\emph{自洽性（self-consistency）}进行并行采样，即模型生成多个回复并选出出现最频繁的那个。
+\item 方法 3：迭代式\emph{自我修正}，即模型在多个步骤中审视并改进自己的推理和答案。
+\end{itemize}
+
+这些方法都属于推理时扩展，因为它们会让模型生成更多词元，从而增加推理时的计算需求。它们在提升准确率的同时让推理变得更昂贵，这正是推理时扩展技术的共同特点。本章讨论前两种方法，第三种将在第 5 章介绍。
+
+第一种方法通过提示模型解释其推理过程来提升答案准确率，简单却极为有效。
+
+第二种方法对同一输入采样多个回复，并选出出现最频繁的那个。为此，我们会扩展上一章介绍的文本生成函数，并实现\emph{自洽性}——一种基于投票的推理时扩展技术。
+
+总共，我在数千次实验中对十余种不同的推理时扩展技术进行了评估。我之所以选择图 4.3 所示的三种方法，是因为它们兼具三个优点：能提升本书所用模型的准确率、代表了推理时扩展的主要实践范式，而且足够简单，可以从零实现而无需太多额外机制。它们还覆盖了两种主要模式：生成更长的回复，以及生成多个回复。
+
+\myGraphic{0.92}{images/CH04_F03_Raschka2.png}{图 4.3 三种提升推理能力的推理时方法。第一种修改提示，鼓励逐步推理；第二种采样多个答案并选出出现最频繁的那个。这两种方法在本章讨论。第三种方法让模型迭代地改进自己的回复，将在下一章介绍。}
+
+包含推理和解释的更长回复（方法 1 和方法 3），正是我们通常期待推理模型给出的。并行采样（方法 2）在生产系统中也被广泛使用，例如 Claude 4（见 2025 年 5 月 Claude 4 的发布介绍：\href{https://www.anthropic.com/news/claude-4}{https://www.anthropic.com/news/claude-4}）。
+
+\section{加载预训练模型}
+
+在开始实现推理时扩展方法之前，我们先加载预训练的基础模型和分词器。下面的代码与上一章所用的代码类似。
+
+\begin{codeboxt}{代码清单 4.1 加载分词器和基础模型}
+import torch
+from reasoning_from_scratch.ch02 import get_device
+from reasoning_from_scratch.ch03 import (
+     load_model_and_tokenizer
+)
+
+device = get_device()
+device = torch.device("cpu")  #1
+
+model, tokenizer = load_model_and_tokenizer(
+    which_model="base",
+    device=device,
+    use_compile=False
+)
+\end{codeboxt}
+{\noindent\small\textit{\#1 若要在 GPU 上运行代码，请删除这一行（前提是你的机器支持）。}\par}
+
+由于本章代码运行开销很低，我建议首次运行时使用 \texttt{"}\texttt{cpu}\texttt{"} 设备，以获得与本章展示一致的结果（在 GPU 上运行可能会使结果发生细微变化）。
+
+让我们用 MATH-500 数据集中的一个提示（prompt）来试试这个模型，该数据集我们在上一章已经用过：
+
+\begin{codebox}
+from reasoning_from_scratch.ch03 import render_prompt
+
+raw_prompt = (
+    "Half the value of $3x-9$ is $x+37$. "
+    "What is the value of $x$?"
+)
+prompt = render_prompt(raw_prompt)
+print(prompt)
+\end{codebox}
+
+格式化后的提示如下：
+
+\begin{codebox}
+You are a helpful math assistant.
+Answer the question and write the final result on a new line as:
+\boxed{ANSWER}
+
+Question:
+Half the value of $3x-9$ is $x+37$. What is the value of $x$?
+
+Answer:
+\end{codebox}
+
+我们可以把前面的提示作为输入，传给上一章定义的 \texttt{generate\_text\_stream\_concat} 函数。
+
+我们希望比较多种推理时扩展策略，因此会对文本生成包装函数做一点小改动，使我们可以在不改变周边提示处理和输出代码的前提下，换入不同的生成函数和设置。这些改动在下一条代码清单的代码注释中已标出。
+
+\begin{codeboxt}{代码清单 4.2 修改后的 \texttt{generate\_text\_stream\_concat} 函数}
+from reasoning_from_scratch.ch02 import generate_text_basic_stream_cache
+
+def generate_text_stream_concat_flex(
+    model, tokenizer, prompt, device, max_new_tokens,
+    verbose=False,
+    generate_func=None,  #1
+    **generate_kwargs     #1
+):
+
+    if generate_func is None:  #2
+        generate_func = generate_text_basic_stream_cache
+
+    input_ids = torch.tensor(
+        tokenizer.encode(prompt), device=device
+        ).unsqueeze(0)
+
+    generated_ids = []
+    for token in generate_func(
+        model=model,
+        token_ids=input_ids,
+        max_new_tokens=max_new_tokens,
+        eos_token_id=tokenizer.eos_token_id,
+        **generate_kwargs,  #3
+    ):
+        next_token_id = token.squeeze(0)
+        generated_ids.append(next_token_id.item())
+
+        if verbose:
+            print(
+                tokenizer.decode(next_token_id.tolist()),
+                end="",
+                flush=True
+            )
+    return tokenizer.decode(generated_ids)
+\end{codeboxt}
+{\noindent\small\textit{\#1 我们新增参数，用于接收文本生成函数和额外参数。 \newline \#2 如果未指定文本生成函数，我们就像第 3 章那样使用 generate\_text\_basic\_stream\_cache。 \newline \#3 如有需要，我们可以向文本生成函数传入额外参数。}\par}
+
+简而言之，前面的 \texttt{generate\_text\_stream\_concat\_flex} 函数与上一章的 \texttt{generate\_text\_stream\_concat} 函数类似，区别在于我们现在可以把文本生成函数（例如 \texttt{generate\_text\_basic\_stream\_cache}）作为参数传入，而不是把它硬编码进去。这样做的好处是：外层包装函数可以在一处继续处理提示编码、流式传输和解码，而内层的生成步骤则可以替换为不同的解码策略。这使得公平比较各种方法变得更容易，因为我们只改动了生成逻辑，而非整条流水线。在后续小节中，我们会把 \texttt{generate\_text\_basic\_stream\_cache} 函数换成更高级的函数。
+
+使用 \texttt{generate\_text\_basic\_stream\_cache} 函数的方式也与之前类似，区别只是我们现在可以显式地传入该函数：
+
+\begin{codebox}
+response = generate_text_stream_concat_flex(
+    model, tokenizer, prompt, device,
+    max_new_tokens=2048, verbose=True,
+    generate_func=generate_text_basic_stream_cache
+)
+\end{codebox}
+
+生成的输出如下：
+
+\begin{codebox}
+\boxed{20}
+\end{codebox}
+
+请注意，这个答案是错的，正确答案是 83。在本章剩余部分以及下一章中，我们将实现推理时扩展方法，让模型能够生成正确答案。
+
+\section{通过思维链提示生成更好的回复}
+
+我们已经加载了预训练的基础模型并搭建好文本生成函数；现在来关注如何通过所谓的\emph{思维链}提示改进模型输出。这种提示技术经典、简单且有效。它通过修改输入提示来鼓励 LLM 生成解释，也就是一条思维链（也称推理链），如图 4.4 所示。
+
+\myGraphic{0.92}{images/CH04_F04_Raschka2.png}{图 4.4 我们的第一种推理时方法——思维链提示，它修改提示，鼓励模型在给出最终答案之前逐步解释自己的推理过程。}
+
+尝试思维链提示最简单的方式，是追加一条要求模型逐步推理的额外指令。这种指令有多种措辞。例如，最早提出该主题的论文使用了 \texttt{"}\texttt{Let}\texttt{'}\texttt{s} \texttt{think} \texttt{step} \texttt{by} \texttt{step.}\texttt{"}（\href{https://arxiv.org/abs/2205.11916}{https://arxiv.org/abs/2205.11916}），但不同的措辞可能因模型和任务而异、效果更好。这里我们使用 \texttt{"}\texttt{Explain} \texttt{step} \texttt{by} \texttt{step.}\texttt{"}，因为在本章实验中它效果很好，而且能让示例保持简单：
+
+\begin{codebox}
+prompt_cot = prompt + " \n\nExplain step by step."
+
+response_cot = generate_text_stream_concat_flex(
+    model, tokenizer, prompt_cot, device,
+    max_new_tokens=2048, verbose=True,
+)
+\end{codebox}
+
+现在的回复如下：
+
+\begin{codebox}
+ To solve the problem, we need to find the value of \( x \) such that
+half the value of \( 3x - 9 \) is equal to \( x + 37 \).
+
+# ...  #1
+
+### Step 3: Solve for \( x \)
+Subtract \( 2x \) from both sides to isolate \( x \):
+\[
+3x - 2x - 9 = 74
+\]
+Simplify:
+\[
+x - 9 = 74
+\]
+Add 9 to both sides to solve for \( x \):
+\[
+x = 74 + 9
+\]
+\[
+x = 83
+\]
+
+### Final Answer:
+\[
+\boxed{83}
+\]
+\end{codebox}
+{\noindent\small\textit{\#1 为节省篇幅，回复已被截断。}\par}
+
+可以看到，模型现在写出了一段冗长的逐步解释，并且在这个例子中得出了正确答案。
+
+这个简单的思维链提示很好地展示了推理时扩展的取舍。虽然模型现在答对了，但它消耗的词元比之前多得多。如第 2 章所讨论的，LLM 一次生成一个词元，而每多生成一个词元就需要对模型再做一次前向传播。因此，这些中间推理步骤不仅让答案变长，还直接增加了延迟、计算成本，而且往往会增加 API 成本。
+
+请注意，尽管模型在这个例子中生成了正确答案，但并非所有问题都能从思维链提示中受益。对于简单问题，它有时甚至会降低模型表现，因为模型可能生成错误的解释并误导自己。这种现象被称为“过度思考（overthinking）”。
+
+最后，并非每个模型都能从“Explain step by step”这类指令中受益。在这个例子中，我们使用的是一个简单的、并不总是生成解释的基础模型，因此思维链提示能帮上忙。经过训练的推理模型——例如上一章所用 Qwen3 模型的“reasoning”变体——在给出回复时已经会附上解释，既不需要也不受益于这类思维链提示。
+
+\begin{mySidebar}{为什么思维链能提升准确率}
+
+思维链提示要求模型写出通向最终答案的中间步骤。这在两个实际方面有所帮助。
+
+第一，逐步推演给了模型更多自我纠正的机会。
+
+第二，逐步推理与许多训练样本的书写方式相吻合。例如，大型数学和逻辑数据集往往包含详细的解答，因此要求给出思维链，能让模型对齐它已经学过的模式。
+
+与此同时，思维链推理并不能保证正确。它仍可能产生错误的推理，而对于非常简单的问题，它甚至可能引入导致更多错误的冗余步骤。换言之，思维链可以提升许多推理任务的准确率，但并非普遍有效。
+
+总体而言，思维链提示并不会为模型提供新知识，而是改变模型使用已有知识的方式。这种转变往往能带来更可靠的答案，对数学、代码、逻辑以及其他多步问题尤其如此。
+
+\end{mySidebar}
+
+\begin{mySidebar}{练习 4.1：在 MATH-500 上使用思维链提示}
+
+修改代码清单 3.15 中的 \texttt{evaluate\_math500\_stream} 函数，看看思维链提示能否提升基础模型在 MATH-500 上的准确率。
+
+\end{mySidebar}
+
+\section{用温度缩放控制输出多样性}
+
+上一节通过思维链提示扩展模型的答案，让我们初步体会了推理时扩展。思维链提示可以看作一种串行技术，因为它增加了下一个词元预测的步数。
+
+在本章剩余部分，我们将实现一种自洽性技术（也称\emph{自洽性采样}），它会生成多个答案，如图 4.5 所示。该技术由 Google Research 的论文《Self-Consistency Improves Chain of Thought Reasoning in Language Models》正式提出（\href{https://arxiv.org/abs/2203.11171}{https://arxiv.org/abs/2203.11171}）。
+
+\myGraphic{0.92}{images/CH04_F05_Raschka2.png}{图 4.5 自洽性采样是我们的第二种推理时方法，它生成多个答案并选出出现最频繁的那个。该方法依赖温度缩放，而温度缩放会影响模型如何采样下一个词元。}
+
+由于该技术生成的多个答案彼此独立，因此可以通过并行采样来实现（前提是你具备必要的资源，例如多块 GPU），这样不会增加用户获得答案的时间。（思维链提示可以与这种技术结合使用，详见后文。）
+
+在实现自洽性采样（图 4.5 中的第 5 步）之前，我们首先需要扩展文本生成函数，使其能够对同一提示产生不同的答案。为此，我们将实现两种让模型能够采样出不同回复的技术：\emph{温度缩放}（第 3 步）和 \emph{top-p 过滤}（第 4 步）。
+
+温度缩放是本节的重点；它将成为本章其余部分控制输出多样性的关键手段之一，也是随后 top-\emph{p} 过滤方法的基础。不过在此之前，我们先看看 LLM 是如何采样下一个词元的。这些底层的采样控制看起来可能过于技术化，但正是它们让我们能够为自洽性采样生成多样化的候选答案。
+
+\subsection{理解下一个词元的选择过程}
+
+我们来仔细看看目前已经实现的文本生成过程，了解下一个词元的选择在底层是如何进行的。这有助于我们理解温度缩放背后的动机。
+
+假设我们有下面这个简单的提示：
+
+\begin{codebox}
+ex_prompt = "The capital of Germany is"
+
+response = generate_text_stream_concat_flex(
+    model, tokenizer, ex_prompt, device,
+    max_new_tokens=1, verbose=True
+)
+\end{codebox}
+
+模型的回复是 \texttt{"}\texttt{ Berlin}\texttt{"}。这看起来相对简单，但在底层其实发生了多个步骤，如图 4.6 所示。
+
+\myGraphic{0.92}{images/CH04_F06_Raschka2.png}{图 4.6 LLM 如何生成下一个词元。与本书所有流程示意图一样，流程自下而上进行。模型把输入转换为词元 ID，为所有可能的下一个词元计算得分，并选出得分最高的那个作为下一个输出。}
+
+生成文本时，输入首先会被转换为词元 ID（如第 2 章所讨论）：
+
+\begin{codebox}
+input_token_ids = torch.tensor(
+    tokenizer.encode(ex_prompt), device=device
+).unsqueeze(0)
+print(input_token_ids)
+\end{codebox}
+
+在这个例子中，这些就是对应的词元 ID：
+
+\begin{codebox}
+tensor([[ 785, 6722,  315, 9856,  374]])
+\end{codebox}
+
+在图 4.6 的第 2 步中，我们得到想要生成的输出词元的得分。这些输出得分也称为 \emph{logits}。LLM 会为每个输入词元生成一个输出词元，但我们只关心最后一个，通过 \texttt{[:,} \texttt{-1]} 张量索引来选取它。这最后一个词元对应我们想要生成的词元：
+
+\begin{codebox}
+with torch.inference_mode():
+    next_token_logits = model(input_token_ids)[:, -1]
+print(next_token_logits.shape)
+\end{codebox}
+
+打印出的输出形状是 \texttt{[1,} \texttt{151936]}，其中 \texttt{151936} 是该分词器和模型对应的词表大小。词表包含分词器能够处理、LLM 能够生成的所有唯一词元。
+
+要得到下一个生成的词元（在这个例子中是 \texttt{"}\texttt{ Berlin}\texttt{"}），我们必须找到得分最大的那个词表条目（图 4.6 中的第 3 步）：
+
+\begin{codebox}
+max_token_id = torch.argmax(next_token_logits)
+print(f"Token ID: {max_token_id}")
+print(f"Decoded token: '{tokenizer.decode([max_token_id])}'")
+\end{codebox}
+
+输出如下：
+
+\begin{codebox}
+Token ID: 19846
+Decoded token: ' Berlin'
+\end{codebox}
+
+至此我们已经介绍了生成下一个词元的三个主要步骤。在进入下一节之前，我们先仔细看看传给 \texttt{torch.argmax} 函数以获取词元 ID 的 \texttt{next\_token\_logits} 张量的得分分布。我们用 Matplotlib 把它画出来。
+
+\begin{codeboxt}{代码清单 4.3 绘制下一个词元的 logit 得分}
+import matplotlib.pyplot as plt
+
+def plot_scores_bar(
+    next_token_logits, start=19_800, end=19_900,
+    arrow=True, ylabel="Logit value"
+):
+    x = torch.arange(start, end)  #1
+    logits_section = next_token_logits[0, start:end].float().cpu() #2
+
+    plt.bar(x, logits_section)  #3
+    plt.xlabel("Vocabulary index")
+    plt.ylabel(ylabel)
+
+    if arrow:  #4
+        max_idx = torch.argmax(logits_section)
+        plt.annotate(
+            "Berlin",
+            xy=(x[max_idx], logits_section[max_idx]),
+            xytext=(x[max_idx] - 25, logits_section[max_idx] - 2),
+            arrowprops={
+                "facecolor": "black", "arrowstyle": "->", "lw": 1.5
+            },
+            fontsize=10,
+        )
+
+    plt.grid(alpha=0.3)
+    plt.tight_layout()
+    plt.show()
+
+plot_scores_bar(next_token_logits)
+\end{codeboxt}
+{\noindent\small\textit{\#1 选取词表的子区间。 \newline \#2 .cpu() 是 to(torch.device(“cpu”)) 的简写。 \newline \#3 绘制所选范围内的 logits（得分）。 \newline \#4 画一个箭头标出最大的得分。}\par}
+
+我们把图限制在词表索引 19,800 到 19,900 之间的这 100 个词元上，而不是绘制全部 151,936 个条目的得分，否则图会过于拥挤。我选择这个范围是因为它包含得分最高的条目。结果图如图 4.7 所示。
+
+\myGraphic{0.92}{images/CH04_F07_Raschka2.png}{图 4.7 语言模型庞大词表中 100 个词元切片的下一个词元 logits。每根柱子代表该切片内一个可能词元的得分，其中“Berlin”的 logit 值最高，被选为下一个词元。}
+
+图 4.7 中的图展示了词表索引 19,800–19,899 对应的 100 个 logit 值（得分）。这些值大致在 –8 到 20 之间，其中值 20 对应词元 \texttt{"}\texttt{ Berlin}\texttt{"} 的词表索引。
+
+\subsection{通过温度参数重新缩放词元得分（logits）}
+
+既然你已经了解模型如何选择下一个词元，我们就可以引入温度的概念了。温度，或者更准确地说，温度参数，会重新缩放 logits，使对应的概率分布变得更尖锐或更平坦，从而影响下一个词元的选择方式。
+
+如图 4.8 所示，本节聚焦于在用于采样之前，用温度参数重新缩放下一个词元的 logits。这里的重新缩放指的是调整得分的大小，使采样步骤对得分之间的差异更敏感或更不敏感。
+
+\myGraphic{0.92}{images/CH04_F08_Raschka2.png}{在本节中，我们将实现温度缩放的核心部分（第 3.2 步），它负责调整下一个词元的得分。这让我们能够控制模型在后续步骤中选择下一个词元的把握程度。}
+
+实现温度重新缩放步骤（图 4.8 中的第 3.2 步）的代码相对简短。本质上，下面的代码在把 logit 值转换为概率（下一节讨论）之前对它们重新缩放。
+
+\begin{codeboxt}{代码清单 4.4 通过温度缩放重新缩放下一个词元的得分}
+def scale_logits_by_temperature(logits, temperature):
+    if temperature <= 0:
+        raise ValueError("Temperature must be positive")
+    return logits / temperature
+\end{codeboxt}
+
+在实践中，温度值应为正数，因此如果温度小于或等于零，我们就抛出错误。稍后把温度缩放加入文本生成函数时，我们会加入更多温度缩放的防护措施。
+
+对于其他所有值，logits 会被除以温度。温度为 1.0 表示不做改变，因为一个数除以 1 保持不变。温度低于 1.0 会使分布更尖锐，让模型在选择下一个词元时更有把握。温度高于 1.0 会使 logit 分布更平坦，从而让采样（图 4.8 中的第 3.4 步）更具多样性。换句话说，较高的温度会缩小最高词元与排名较低词元之间的概率差距，增加采样选到非最大值词元的可能性。
+
+我们来看看 \texttt{scale\_logits\_by\_temperature} 函数的实际效果。我们用 0.5 和 5.0 这两个相对极端的温度值来试验，以获得更明显的效果。
+
+\begin{codeboxt}{代码清单 4.5 绘制经温度重新缩放后的 logits}
+def plot_logits_with_temperature(
+    next_token_logits, start=19_800, end=19_900,
+    temps=(0.5, 5.0),
+):
+    x = torch.arange(start, end)
+    logits_orig = next_token_logits[0, start:end].float().cpu()
+
+    logits_scaled = [   #1
+        scale_logits_by_temperature(logits_orig, T) for T in temps  #2
+    ]   #2
+
+    plt.plot(x, logits_orig, label="Original logits", lw=2)  #2
+    plt.plot(
+        x, logits_scaled[0],
+        label=f"T={temps[0]} (sharper)", ls="--", lw=1       #3
+    )
+    plt.plot(
+        x, logits_scaled[1],
+        label=f"T={temps[1]} (flatter)", ls=":", lw=3
+    )
+
+    # 高亮最大 logit
+    max_idx = torch.argmax(logits_orig)                     #4
+    plt.annotate(                                            #4
+        "Berlin",
+        xy=(x[max_idx], logits_orig[max_idx]),
+        xytext=(x[max_idx] - 25, logits_orig[max_idx] + 2),
+        arrowprops={"facecolor": "black", "arrowstyle": "->", "lw": 1.5},
+        fontsize=12,
+    )
+
+    plt.xlabel("Vocabulary index")
+    plt.ylabel("Logit value")
+    plt.legend()
+    plt.grid(alpha=0.3)
+    plt.tight_layout()
+    plt.show()
+
+plot_logits_with_temperature(
+    next_token_logits,
+    temps=(0.5, 5.0)                                        #5
+)
+\end{codeboxt}
+{\noindent\small\textit{\#1 应用温度缩放。 \newline \#2 绘制所选范围内的 logits（得分）。 \newline \#3 绘制所选范围内的 logits（得分）。 \newline \#4 画一个箭头标出最大的得分。 \newline \#5 使用温度 0.5 和 5 运行缩放与绘图。}\par}
+
+如图 4.9 所示，较大的温度（5.0）得到平坦得多的得分分布，而较小的温度（0.5）则得到尖锐得多的分布。
+
+\myGraphic{0.92}{images/CH04_F09_Raschka2.png}{图 4.9 温度缩放对 logits 的影响。较低的温度使分布更尖锐，较高的温度使其更平坦。（注意，为便于阅读，此处用折线图呈现；柱状图能更准确地表示各个词表的得分。）}
+
+代码清单 4.5 中的绘图代码与代码清单 4.3 中的绘图代码非常相似。除了应用温度缩放之外，我们现在用折线图（\texttt{plt.plot}）代替柱状图（\texttt{plt.bar}）。虽然对于 \emph{x} 轴上的离散词表索引来说，柱状图在技术上更合适，但在这个例子中折线图更容易可视化和比较重新缩放后的 logits。
+
+重点不在于某个 logit 的绝对高低，而在于 logit 之间的差异如何变化。如果像 \texttt{"}\texttt{Berlin}\texttt{"} 这样的词元比其他候选更突出，它在后续就更可能被选中。如果差异缩小，排名较低的词元就更可能被选中。下一节将通过把 logits 转换为概率来说明这一点。
+
+\begin{mySidebar}{为什么叫“温度”？}
+
+“\emph{温度}”一词来自物理学，在那里温度控制系统中的随机性或运动程度。在 LLM 中，我们借用同样的思路来控制模型选择下一个词元的把握程度或创造性，你将在接下来几节中看到。
+
+\end{mySidebar}
+
+\subsection{从概率分布中采样下一个词元}
+
+上一节中，我们用不同的温度值重新缩放了 logit 值。这让我们能够影响模型选择下一个词元的方式。在进入下一节的下一个词元采样环节之前，我们再加入一个中间步骤：把重新缩放后的 logits 转换为概率得分，如图 4.10 所示。
+
+为了演示重新缩放后的 logits 如何转换为概率得分（图 4.10 中的第 3.3 步），我们使用温度 5.0，这样更容易在图中可视化得到的概率。例如，\texttt{"}\texttt{ Berlin}\texttt{"} 词元的 logit 值非常高，否则会主导整个量程，使我们难以看清周围词元的概率。
+
+\myGraphic{0.92}{images/CH04_F10_Raschka2.png}{图 4.10 生成词元的采样过程总览。这里我们关注第 3.3 步和第 3.4 步，即把下一个词元的得分转换为概率分布。下一个词元将基于该分布进行采样。}
+
+从重新缩放后的 logits 到概率得分的转换只需一次函数调用即可完成，即 \texttt{torch.softmax}，如下一条代码清单所示。
+
+\begin{codeboxt}{代码清单 4.6 从概率分布中采样下一个词元}
+rescaled_logits = scale_logits_by_temperature(next_token_logits, 5.0)  #1
+
+next_token_probas = torch.softmax(  #2
+    rescaled_logits, dim=-1
+)
+\end{codeboxt}
+{\noindent\small\textit{\#1 第 3.2 步：重新缩放下一个词元的得分 \newline \#2 第 3.3 步：把重新缩放后的 logits 转换为概率得分}\par}
+
+\texttt{torch.softmax} 函数把 logit 值归一化到 0 到 1 的区间，使它们之和为 1。我们可以用下面的代码来确认：
+
+\begin{codebox}
+print("Probability sum:", torch.sum(next_token_probas))
+\end{codebox}
+
+此外，我们复用代码清单 4.3 中的 \texttt{plot\_scores\_bar} 函数来可视化转换后的得分：
+
+\begin{codebox}
+plot_scores_bar(
+    next_token_probas, arrow=False, ylabel="Probability value"
+)
+\end{codebox}
+
+得到的图（现在 \emph{y} 轴上是概率值）如图 4.11 所示，我们可以看到词元 ID 19,846（\texttt{"}\texttt{ Berlin}\texttt{"}）在所选词表范围内取值最高。其概率为 0.0003，我们可以用下面的代码确认：
+
+\myGraphic{0.92}{images/CH04_F11_Raschka2.png}{图 4.11 对重新缩放后的 logits 应用 softmax 函数得到的词元概率。概率最高的词元（对应“ Berlin”，但为简化代码省略了标签）被选为下一个输出。}
+
+\begin{codebox}
+print("Token ID 19,846 probability:", next_token_probas[:, 19846])
+\end{codebox}
+
+注意，虽然 0.0003 这个值相对较小，但在这幅图中，所选词表范围之外并没有更大的值。例如，用下面的代码可以确认 0.0003 确实是最大值：
+
+\begin{codebox}
+print("Highest probability:", max(next_token_probas.squeeze(0)))
+\end{codebox}
+
+我们可以把这个得分理解为模型的置信度。这意味着，与任何其他词元相比，模型更有把握选择 \texttt{"}\texttt{ Berlin}\texttt{"}（19,846）作为下一个词元。
+
+这个值之所以这么小，是因为我们使用了较高的温度，这样更便于把它与其他词元的值画在一起。如果我们把温度从 5 改为 0.5，该概率得分会从 0.0003 上升到 0.3398，而其他词元的概率得分会更加趋近于 0。
+
+\begin{mySidebar}{softmax 函数的底层原理}
+
+softmax 函数把一个原始得分（logits）向量转换为概率分布，其中每个值都介于 0 和 1 之间，且所有值之和为 1。这种转换让这些值更易于解释，也便于后续采样。
+
+如果你熟悉数学记号，softmax 函数背后的公式是
+
+\end{mySidebar}
+
+softmax(\emph{z}ᵢ) = exp(\emph{z}ᵢ) / Σⱼ exp(\emph{z}ⱼ)
+
+\begin{mySidebarBox}
+
+这里，\emph{z} 是由实数值输入构成的向量
+
+\end{mySidebarBox}
+
+\emph{z} = [\emph{z}₁, \emph{z}₂, …, \emph{z}ₙ],
+
+\begin{mySidebarBox}
+
+其中
+
+\begin{itemize}
+\item \emph{n }是向量中元素的个数。
+\item \emph{i }是当前元素的索引（1 ≤ \emph{i} ≤ \emph{n}）。
+\item \emph{j }是用于对所有元素求和的索引（1 ≤ \emph{j} ≤ \emph{n}）。
+\end{itemize}
+
+这样会为每个元素 \emph{z}ᵢ 生成一个归一化的概率，使得
+
+\end{mySidebarBox}
+
+Σᵢ softmax(\emph{z}ᵢ) = 1
+
+\begin{mySidebarBox}
+
+在代码中，softmax 函数可以用三行实现：
+
+\begin{codebox}
+def softmax_with_temperature(logits, temperature):
+    scaled_logits = logits / temperature
+    return torch.softmax(scaled_logits, dim=0)
+\end{codebox}
+
+在实践中，我更倾向使用 \texttt{torch.softmax} 函数，因为它带有一些额外的数值稳定性改进，能更可靠地处理极小和极大的值。
+
+\end{mySidebarBox}
+
+把 logits 转换为这些概率得分的目的是，它们更具可解释性，而且我们现在可以用 \texttt{torch.multinomial} 函数从中采样。例如，在这个概率分布中抽取一个样本时，在温度设为 5.0 的情况下，我们有 0.03\% 的概率抽到 \texttt{"}\texttt{ Berlin}\texttt{"}（而在温度为 0.5 时，抽到 \texttt{"}\texttt{ Berlin}\texttt{"} 的概率为 33.98\%）。
+
+采样过程对应图 4.10 中的第 3.4 步，可以实现如下：
+
+\begin{codebox}
+torch.manual_seed(123)
+print(
+    "Sampled token:",
+    torch.multinomial(next_token_probas.cpu(), num_samples=1)
+)
+\end{codebox}
+
+这段代码返回词元 ID 65,094，对应单词 \texttt{"}\texttt{ mistress}\texttt{"}。注意，在我们的语境 \texttt{"}\texttt{The} \texttt{capital} \texttt{of} \texttt{Germany} \texttt{is}\texttt{"} 中，这个词讲不通。在这个例子中，它是由于高温设置而被随机选中的，高温会鼓励采样 \texttt{"}\texttt{ Berlin}\texttt{"} 以外的词元。
+
+\texttt{torch.multinomial} 函数按概率比例对词表索引进行采样。换句话说，概率较高的词表索引更可能被抽到。如果我们把采样重复非常多次，那么在温度为 5 时，抽到词元 \texttt{"}\texttt{ Berlin}\texttt{"} 对应词表索引的概率会是 0.03\%。
+
+在查看更多示例之前，请注意我们指定了随机种子，以使本章代码可复现。\texttt{torch.multinomial()} 函数在 CUDA 和 MPS 设备上仍可能给出不同结果，甚至在抽取较多样本时可能崩溃（我在 PyTorch 2.9 的 CUDA 和 MPS 设备上都观察到这个问题），因此我们通过 \texttt{.cpu()} 在 CPU 上执行采样。
+
+现在我们再采样一些下一个词元的候选，以获得更具代表性的样本。
+
+\begin{codeboxt}{代码清单 4.7 采样多个下一个词元候选}
+def count_samples(probas, num_samples=1000, threshold=1, tokenizer=None):
+    samples = torch.multinomial(  #1
+        probas.cpu(), num_samples=num_samples, replacement=True
+    )
+    counts = torch.bincount(samples.squeeze(0), minlength=1)  #2
+
+    for i, c in enumerate(counts):
+        if c > threshold:   #3
+            if tokenizer is None:
+                print(f"Vocab index {i}: {c.item()}x")
+            else:
+                print(f"'{tokenizer.decode([i])}': {c.item()}x")
+\end{codeboxt}
+{\noindent\small\textit{\#1 按概率抽取样本。 \newline \#2 统计每个索引被选中的次数。 \newline \#3 打印被频繁采样的词表索引（条目）。}\par}
+
+代码清单 4.7 中的 \texttt{count\_samples} 函数从概率分布中采样词元索引，并统计每个词元被抽到的次数。它用 \texttt{torch.multinomial} 按概率比例随机选取 \texttt{num\_samples} 个索引。\texttt{replacement=True} 设置允许我们多次抽到同一个词元。
+
+接着，\texttt{torch.bincount} 统计每个索引出现的次数。它只打印出现次数超过指定阈值的词元，以免被抽到次数较少的词元把输出弄乱。
+
+\begin{mySidebar}{多项式采样}
+
+多项式采样是在给定词表上的概率分布（例如 softmax 概率得分）时，用来选取下一个词元的过程。在多项式采样中，我们不是总选择最可能的词元（即\emph{贪心解码}），而是随机抽取一个词元，概率较高的词元更可能被选中。这种随机性对于生成多样化的回复很重要，我们稍后会在自洽性采样中用到它。
+
+为了进一步说明，我们可以把概率得分看作一组带权重的选项。例如，概率为 0.40 的词元出现的可能性是概率为 0.10 的词元的四倍，但两者都仍是可能的结果。
+
+假设模型分配了以下概率：
+
+\begin{itemize}
+\item “Berlin”：0.70
+\item “Munich”：0.20
+\item “Hamburg”：0.10
+\end{itemize}
+
+贪心解码总是返回“Berlin”。而多项式采样则按这些权重抽取一个词元。在非常多次的抽取中，“Berlin”出现得最频繁（占 70\%），“Munich”有时出现（占 20\%），而“Hamburg”只是偶尔出现（占 10\%）。
+
+正是这种变化性，让我们能够在后续小节中为自洽性生成多个候选答案。
+
+\end{mySidebar}
+
+\begin{myWarning}{注意}
+ \texttt{count\_samples} 函数仅用于示意。在真实的文本生成中，我们一次只抽取一个词元。这个函数从分布中抽取大量样本，以展示每个词元被选中的频率，从而让底层的概率更易于可视化和理解。\end{myWarning}
+
+首先，我们对应用温度 5 得到的概率得分运行 \texttt{count\_samples} 函数：
+
+\begin{codebox}
+torch.manual_seed(123)
+count_samples(next_token_probas, tokenizer=tokenizer)
+\end{codebox}
+
+输出如下：
+
+\begin{codebox}
+'}': 2x
+' </': 2x
+' represent': 2x
+' Inf': 2x
+'()*': 2x
+' beside': 2x
+' Kob': 2x
+'⧄': 2x
+\end{codebox}
+
+可以看到，尽管默认样本量为 1,000，但没有一个被采样到的词元出现超过两次。而且，在 \texttt{"}\texttt{The} \texttt{capital} \texttt{of} \texttt{Germany} \texttt{is}\texttt{"} 这个查询的语境下，它们全都是无意义的词元。出现这些无意义结果的原因是我们使用的温度值太高了。
+
+我们试试更低的温度值 0.35，它会让得分分布更尖锐，从而更可能选出有意义的下一词元：
+
+\begin{codebox}
+torch.manual_seed(123)
+probas_lowT = torch.softmax(
+    scale_logits_by_temperature(next_token_logits, 0.35), dim=-1
+)
+\end{codebox}
+
+这一次，我们看到如下输出：
+
+\begin{codebox}
+' __': 158x
+' Berlin': 435x
+' ____': 169x
+' ______': 209x
+' Munich': 3x
+' Hamburg': 3x
+' _____': 18x
+\end{codebox}
+
+作为 \texttt{"}\texttt{The capital} \texttt{of} \texttt{Germany} \texttt{is}\texttt{"} 查询的一组下一词元候选，这个输出合理得多。在 1,000 个样本中，\texttt{"}\texttt{ Berlin}\texttt{"} 词元被抽到了 435 次。你可以通过 \texttt{print(probas\_lowT[0,} \texttt{19\_846])} 检查到，在温度值 0.35 下抽到这个词元的概率约为 42\%。若想让 \texttt{"}\texttt{ Berlin}\texttt{"} 更可能被采样到，我们可以进一步降低温度。
+
+注意，其他一些较罕见的候选也讲得通。例如，\texttt{"}\texttt{ Munich}\texttt{"} 和 \texttt{"}\texttt{ Hamburg}\texttt{"} 都是德国的大城市，因此与查询并非完全无关。那些下划线回复（\texttt{"}\texttt{ \_\_\_\_}\texttt{"}）很可能是模型见过带占位符的测验式文本所致，例如 \texttt{"}\texttt{The} \texttt{capital} \texttt{of} \texttt{Germany} \texttt{is \_\_\_\_}\texttt{"}。
+
+你可能会想，既然 \texttt{"}\texttt{ Berlin}\texttt{"} 才是正确答案，那么加入这种温度重新缩放和多项式采样、让模型偶尔给出错误答案又有什么意义呢？对于不同类型的查询，在采样中引入随机性有助于模型探索其他回复，而不是总选择唯一最可能的词元。这种变化性对于创造性或开放式的任务很有用，因为这类任务可能有多个合理的补全。
+
+具体来说，在推理任务中，我们可以通过自洽性（见 4.6 节）等技术来利用这种采样多样性，这些技术生成多个候选答案并加以比较，从而提升答案准确率。
+
+\subsection{把温度缩放加入文本生成函数}
+
+在通过加入一个词元概率选择过滤器来进一步改进文本生成过程之前，我们先把温度缩放改动加入文本生成函数，以便更便捷地用模型生成新词元。
+
+\begin{codeboxt}{代码清单 4.8 带温度缩放的文本生成}
+from reasoning_from_scratch.qwen3 import KVCache
+
+@torch.inference_mode()
+def generate_text_temp_stream_cache(
+    model,
+    token_ids,
+    max_new_tokens,
+    eos_token_id=None,
+    temperature=0.
+):
+    model.eval()
+    cache = KVCache(n_layers=model.cfg["n_layers"])
+    model.reset_kv_cache()
+
+    out = model(token_ids, cache=cache)[:, -1]  #1
+    for _ in range(max_new_tokens):
+
+        ########################################
+        # NEW:
+        orig_device = token_ids.device
+
+        if temperature is None or temperature == 0.0:
+            next_token = torch.argmax(out, dim=-1, keepdim=True)
+
+        else:
+            logits = scale_logits_by_temperature(out, temperature)  #2
+            probas = torch.softmax(logits, dim=-1)  #3
+            next_token = torch.multinomial(probas.cpu(), num_samples=1)  #4
+            next_token = next_token.to(orig_device)
+
+        #########################################
+        if (eos_token_id is not None
+                and torch.all(next_token == eos_token_id)):
+            break
+
+        yield next_token
+        out = model(next_token, cache=cache)[:, -1]
+\end{codeboxt}
+{\noindent\small\textit{\#1 第 3.1 步：获取 logits \newline \#2 第 3.2 步：对 logits 应用温度缩放 \newline \#3 第 3.3 步：转换为概率 \newline \#4 第 3.4 步：按概率采样词元}\par}
+
+代码清单 4.8 中的 \texttt{generate\_text\_temp\_stream\_cache} 与第 2 章的 \texttt{generate\_text\_stream\_cache} 类似。新增之处在于它现在加入了温度重新缩放和采样（位于代码中 \texttt{\# New} 注释标记之后的部分）。
+
+下面的代码展示了温度缩放和采样如何被整合进词元生成循环本身。这个函数可以传给代码清单 4.2 中引入的更灵活的 \texttt{generate\_text\_stream\_concat\_flex} 包装函数，这样外层提示处理代码保持不变，而我们能换入不同的解码策略：
+
+\begin{codebox}
+torch.manual_seed(123)
+response = generate_text_stream_concat_flex(
+    model, tokenizer, prompt, device,
+    max_new_tokens=2048, verbose=True,
+    generate_func=generate_text_temp_stream_cache,  #1
+    temperature=1.1
+)
+\end{codebox}
+{\noindent\small\textit{\#1 使用新的基于温度缩放的文本生成函数。}\par}
+
+输出是 \texttt{\textbackslash boxed\{\$x} \texttt{=} \texttt{\textbackslash frac\{90\}\{7\}\$\}}。正确答案是 83，所以模型仍然是错的，但这只是用来演示：我们可以通过温度缩放和采样来改变答案。
+
+\begin{mySidebar}{选择温度设置}
+
+在实践中，温度的选择取决于目标。温度为 0.0 对应贪心解码，即总是选取概率最高的词元。像 0.3–0.8 这样较小的非零值，在我们希望增加一点多样性、又不让输出过于离谱时常常很有用。高得多的值会让模型更广泛地探索，这对于创造性生成或广泛搜索可能有用，但在我们想要唯一最可能答案的任务上往往会损害可靠性。
+
+\end{mySidebar}
+
+下一节，我们将改进采样过程。
+
+\section{用 top-p 采样平衡多样性与连贯性}
+
+你已经看到温度缩放和采样（通过 \texttt{torch.multinomial}）如何提升 LLM 回复的多样性——无论好坏。具体来说，你看到这种做法最终可能采样到与用户查询无关的词元。
+
+现在我们将加入 top-\emph{p} 过滤器（图 4.12）来改进采样过程，使置信度极低的词元不会被意外采样到。本节描述的 top-\emph{p} 采样过程也称\emph{核采样（nucleus sampling）}。
+
+\myGraphic{0.92}{images/CH04_F12_Raschka2.png}{图 4.12 top-\emph{p} 过滤过程总览。该过滤器通过对词元排序、施加累积截断、选出 top-\emph{p} 子集并重新归一化结果，只保留概率最高的那些词元。}
+
+图 4.12 概括了构成 top-\emph{p} 过滤器的四个步骤：对词元概率排序、计算其累积和、选出满足 top-\emph{p} 截断的子集，以及把剩余概率重新归一化，使其再次构成合法的分布。重新归一化这一步是必要的，因为一旦移除所有低概率词元，剩余概率之和不等于 1。为了正确采样，我们需要重新缩放剩余的值，使其表示一个规范的概率分布。
+
+现在我们来详细过一遍图 4.12 中的第 4.1 步到第 4.4 步。
+
+\subsection{选取 top-p 词元子集}
+
+在实现 top-\emph{p} 过滤器之前，我们先引入一个简单的玩具数据集，以便更轻松地演示温度缩放和采样过程。首先，假设模型和分词器的词表只有 10 个条目，而不是 151,936 个。
+
+\begin{codeboxt}{代码清单 4.9 用玩具数据进行温度缩放和采样}
+toy_logits = torch.tensor(  #1
+    [-0.7, -3.0, 0.1, -1.2, 2.0, -1.0, -0.5, -2.0, 0.3, 1.5]
+)
+
+toy_logits_scaled = scale_logits_by_temperature(toy_logits, 1.0)  #2
+toy_probas = torch.softmax(toy_logits_scaled, dim=-1)   #3
+
+plt.bar(  #4
+    torch.arange(len(toy_probas)), toy_probas,
+    alpha=0.5
+)
+
+plt.ylim([0, 1])
+plt.xlabel("Vocabulary index")
+plt.ylabel("Probability")
+plt.show()
+\end{codeboxt}
+{\noindent\small\textit{\#1 第 3.1 步：获取 logits（这里使用 10 个词元的玩具 logits） \newline \#2 第 3.2 步：应用温度缩放（我们用 1.0 作为占位值） \newline \#3 第 3.3 步：转换为概率 \newline \#4 用柱状图绘制概率}\par}
+
+注意，\texttt{toy\_logits} 变量保存的是代码清单 4.8 中 \texttt{model(token\_ids,} \texttt{cache=cache)[:,} \texttt{-1]} 调用所得下一个词元 logit 得分的示例值，这里假设词表大小为 10。
+
+得到的柱状图如图 4.13 所示，展示了下一个词元 logit 得分被重新缩放为概率后的结果。
+
+\myGraphic{0.92}{images/CH04_F13_Raschka2.png}{图 4.13 top-p 过滤前的词元概率示例。该分布包含许多低概率词元，稍后它们会通过施加累积概率阈值而被截断。}
+
+到目前为止，这基本上是上一节的回顾。现在我们加入图 4.12 所示的前两个 top-\emph{p} 过滤步骤（第 4.1 步和第 4.2 步）。这包括对概率得分按降序排序并计算累积和。
+
+\begin{codeboxt}{代码清单 4.10 计算概率累积和}
+sorted_probas, sorted_idx = torch.sort(toy_probas, descending=True)  #1
+cumsum = torch.cumsum(sorted_probas, dim=-1)  #2
+
+plt.bar(
+    torch.arange(len(sorted_probas)), sorted_probas,
+        alpha=0.5
+)
+plt.step(
+    torch.arange(len(cumsum)), cumsum,
+    where="mid", color="C1", label="Cumulative sum"
+)
+
+plt.ylim([0, 1])
+plt.xlabel("Token rank (sorted by probability)")
+plt.ylabel("Probability")
+plt.show()
+\end{codeboxt}
+{\noindent\small\textit{\#1 第 4.1 步：按概率降序排序 \newline \#2 第 4.2 步：计算累积和}\par}
+
+代码清单 4.10 中使用的 \texttt{torch.cumsum} 函数计算张量沿给定维度的元素累积和。在这个例子中，它把排序后的词元概率逐步相加，因此结果中每个位置表示累积到该词元为止的总概率。
+
+例如，第一个元素等于最高的概率，第二个元素等于前两个概率之和，依此类推，直到最后一个值达到 1。通过代码清单 4.10 生成、如图 4.14 所示的累积阶梯图能最好地说明这一点。
+
+\myGraphic{0.92}{images/CH04_F14_Raschka2.png}{图 4.14 排序后的词元概率及其累积和的可视化。这一步通过展示概率从高到低排列时如何累积，为 top-p 过滤做准备，有助于确定截断阈值应设在哪里。}
+
+现在我们有了概率累积和，就可以实现 top-\emph{p} 过滤的核心步骤了。top-\emph{p} 中的 \emph{p} 代表\emph{概率（probability）}，top-\emph{p} 可以理解为“保留累积概率不超过 \emph{p} 的最小词元集合”。下面这条代码清单给出了 top-\emph{p} 过滤的一种简单实现。
+
+\begin{codeboxt}{代码清单 4.11 一种简单的 top-\emph{p} 过滤规则}
+top_p = 0.8
+keep_mask = cumsum <= top_p
+n_kept = torch.sum(keep_mask).item()
+print("Cumulative sum:", cumsum)
+print("Tokens kept:", n_kept)
+\end{codeboxt}
+
+在代码中，这实现为 \texttt{keep\_mask} \texttt{=} \texttt{cumsum} \texttt{\textless{}=} \texttt{top\_p}，它标记出所有累积概率质量尚未超过阈值 \emph{p} 的词元（这里定义为 \texttt{top\_p=0.8}）。随后计算保留下来的词元数量，并赋给变量 \texttt{n\_kept}。输出如下：
+
+\begin{codebox}
+Cumulative sum: tensor([0.4538, 0.7290, 0.8119, 0.8798,
+0.9170, 0.9475, 0.9701, 0.9886, 0.9969, 1.0000])
+Tokens kept: 2
+\end{codebox}
+
+从返回的累积概率来看，第二个条目（\texttt{0.7290}）刚好低于 top-\emph{p} 阈值 \texttt{0.8}，而第三个条目（\texttt{0.8119}）超过了它，因此只保留前两个词元。
+
+更常见的一种 top-\emph{p} 过滤变体会把超过阈值的那个词元也包含进来，如下一条代码清单所示。
+
+\begin{codeboxt}{代码清单 4.12 一种常见的 top-\emph{p} 过滤变体}
+keep_mask = (cumsum - sorted_probas) < top_p
+n_kept = keep_mask.sum().item()
+print("Tokens kept:", n_kept)
+\end{codeboxt}
+
+这段代码返回 3 作为保留的词元数量。这符合 top-\emph{p} 过滤的定义：保留最小的词元集合，使其累积概率质量至少为 \emph{p}。
+
+我们用一幅图来说明这种 top 过滤。
+
+\begin{codeboxt}{代码清单 4.13 可视化 top-\emph{p} 过滤}
+plt.bar(
+    torch.arange(len(sorted_probas)), sorted_probas,
+    alpha=0.5, label="Sorted probabilities"
+)
+plt.step(
+    torch.arange(len(cumsum)), cumsum, where="mid",
+    color="darkorange", label="Cumulative sum"
+)
+
+plt.axhline(#1
+    top_p, color="red", linestyle="--",
+    label=f"top_p = {top_p}"
+)
+plt.axvline(
+    n_kept - 0.5, color="gray", linestyle=":",
+    label=f"Top-p cutoff at {n_kept} tokens"
+)
+
+plt.xlabel("Token rank (sorted by probability)")
+plt.ylabel("Probability")
+plt.legend()
+plt.grid(alpha=0.3)
+plt.ylim(0, 1.05)
+plt.show()
+\end{codeboxt}
+{\noindent\small\textit{\#1 标出截断位置}\par}
+
+执行代码清单 4.13 中的代码得到的图如图 4.15 所示。该图展示了 \texttt{top\_p} \texttt{=} \texttt{0.8} 这个阈值（水平虚线），它决定了哪些词元会被保留。在这个例子中，前两个词元的累积和低于阈值，因此我们排除截断位置（垂直点线）右侧的所有其他词元。
+
+\myGraphic{0.92}{images/CH04_F15_Raschka2.png}{图 4.15 top-p（核）过滤。词元按概率排序，累积概率超过阈值（p = 0.8）的最小子集被保留下来用于采样。}
+
+要实现这种阈值截断，我们可以使用下面的代码，它先把截断位置（图 4.15 中的垂直虚线）右侧的所有值置零，然后恢复原来的排序顺序。
+
+\begin{codeboxt}{代码清单 4.14 应用 top-\emph{p} 过滤}
+kept_sorted = torch.where(
+    keep_mask, sorted_probas,
+    torch.zeros_like(sorted_probas)
+)
+filtered = torch.zeros_like(toy_probas).scatter(0, sorted_idx, kept_sorted)
+print(filtered)
+\end{codeboxt}
+
+得到的张量如下：
+
+\begin{codebox}
+tensor([0.0000, 0.0000, 0.0000, 0.0000, 0.4538, 0.0000, 0.0000, 0.0000, 0.0829, 0.2752])
+\end{codebox}
+
+可以看到，除索引位置 4、8 和 9 之外的所有值都被置零。这意味着，如果我们现在使用多项式采样函数，只会考虑这三个词元。
+
+最后，我们对这些值重新归一化，使它们之和再次为 1：
+
+\begin{codebox}
+denom = torch.sum(filtered).clamp_min(1e-12)
+renormalized = filtered / denom
+print(renormalized)
+\end{codebox}
+
+归一化后的张量如下：
+
+\begin{codebox}
+tensor([0.0000, 0.0000, 0.0000, 0.0000, 0.5589, 0.0000, 0.0000, 0.0000,
+0.1021, 0.3390])
+\end{codebox}
+
+这种 top-\emph{p} 过滤的目标是移除低概率词元，使它们之后不会被采样到。这有助于减少在给定语境下出现无意义词元回复的情况。
+
+\subsection{把 top-p 过滤器加入文本生成函数}
+
+我们已经用一个玩具示例走完了 top-\emph{p} 过滤的各个步骤。现在我们把四个 top-\emph{p} 过滤步骤（图 4.16 中的第 4.1–4.4 步）加入到现有文本生成函数中，位于概率转换和采样之间。
+
+\myGraphic{0.92}{images/CH04_F16_Raschka2.png}{把 top-p 过滤与温度缩放整合起来。在重新缩放下一个词元的得分之后，top-p 过滤被施加在第 3.3 步和第 3.4 步之间，以把采样限制在最可能的词元上。}
+
+我们先把上一节的各个 top-\emph{p} 过滤步骤整合成一个方便调用的单一函数。
+
+\begin{codeboxt}{代码清单 4.15 top-\emph{p} 过滤函数}
+def top_p_filter(probas, top_p):
+    if top_p is None or top_p >= 1.0:
+        return probas
+
+    sorted_probas, sorted_idx = torch.sort(probas, dim=1, descending=True) #1
+    cumprobas = torch.cumsum(sorted_probas, dim=1)  #2
+
+    prefix = cumprobas - sorted_probas  #3
+    keep = prefix < top_p                #3
+    keep[:, 0] = True          #4
+
+    kept_sorted = torch.where(          #5
+        keep, sorted_probas,             #5
+        torch.zeros_like(sorted_probas)  #5
+    )
+
+    filtered = torch.zeros_like(probas).scatter(1, sorted_idx, kept_sorted)#6
+
+    denom = torch.sum(filtered, dim=1, keepdim=True).clamp_min(1e-12)#7
+    return filtered / denom
+\end{codeboxt}
+{\noindent\small\textit{\#1 第 4.1 步：按概率降序排序 \newline \#2 第 4.2 步：累积和 \newline \#3 第 4.3.1 步：保留前缀累积质量（每个词元之前）\&lt; top\_p 的词元 \newline \#4 对于 top\_p \textless{}= 0，只有概率最高的词元保证会被保留，作为兜底。 \newline \#5 第 4.3.2 步：将截断位置之后的值置零 \newline \#6 第 4.3.3 步：映射回原始顺序 \newline \#7 第 4.4 步：重新归一化使总和为 1}\par}
+
+代码清单 4.15 中的 \texttt{top\_p\_filter} 函数先对词元概率排序并计算其累积和。然后它保留前缀累积质量（每个词元之前的累积概率）低于 \texttt{top\_p} 阈值的词元，其中也包括第一个跨过阈值的词元。它把其余值置零，将保留的值映射回其原始顺序，并重新归一化剩余概率，使其之和再次为 1。
+
+在把这个 \texttt{top\_p\_filter} 函数加入我们的文本生成函数之前，我们先试用一下它，看看它与之前的温度缩放方法配合效果如何。首先，我们获取 logits：
+
+\begin{codebox}
+with torch.inference_mode():
+    next_token_logits = model(input_token_ids)[:, -1]
+print(next_token_logits.shape)
+\end{codebox}
+
+前面的代码为 \texttt{next\_token\_logits} 张量打印出维度 \texttt{[1,} \texttt{151936]}。我们现在处理的是真实数据和完整词表，它有 151,936 个条目。
+
+接着，我们像之前一样，把 logits 重新缩放为概率得分，并用温度 0.35 施加温度缩放：
+
+\begin{codebox}
+torch.manual_seed(123)
+probas_lowT = torch.softmax(
+    scale_logits_by_temperature(next_token_logits, 0.35), dim=-1
+)
+count_samples(probas_lowT, threshold=1, tokenizer=tokenizer)
+\end{codebox}
+
+这段代码与我们在之前的温度缩放示例中使用的类似，它打印出如下采样输出：
+
+\begin{codebox}
+' __': 158x
+' Berlin': 435x
+' ____': 169x
+' ______': 209x
+' Munich': 3x
+' Hamburg': 3x
+' _____': 18x
+\end{codebox}
+
+现在，我们加入 top-\emph{p} 过滤器，看看结果如何变化：
+
+\begin{codebox}
+torch.manual_seed(123)
+probas_lowT = torch.softmax(
+    scale_logits_by_temperature(next_token_logits, 0.35), dim=-1
+)
+probas_lowT_filtered = top_p_filter(probas_lowT, top_p=0.8)
+count_samples(probas_lowT_filtered, threshold=1, tokenizer=tokenizer)
+\end{codebox}
+
+使用 0.8 这个典型的 \texttt{top\_p} 阈值，我们排除掉累积概率占剩余 20\% 的那些最低概率词元。现在的采样输出如下：
+
+\begin{codebox}
+' Berlin': 534x
+' ____': 217x
+' ______': 249x
+\end{codebox}
+
+可以看到，我们现在要么选出正确的城市（把 \texttt{"}\texttt{ Munich}\texttt{"} 和 \texttt{"}\texttt{ Hamburg}\texttt{"} 从候选采样项中移除），要么打印出下划线词元——模型可能会用它把文本格式化成一道测验题，其中 \texttt{'}\texttt{ \_\_\_\_\_\_}\texttt{'} 作为占位符。
+
+现在回到我们的数学查询，把 top-\emph{p} 过滤器加入代码清单 4.8 中编写的 \texttt{generate\_text\_temp\_stream\_cache} 函数。更新后的函数现在名为 \texttt{generate\_text\_top\_p\_stream\_cache}，如下所示。
+
+\begin{codeboxt}{代码清单 4.16 带 top-\emph{p} 过滤的文本生成}
+@torch.inference_mode()
+def generate_text_top_p_stream_cache(
+    model,
+    token_ids,
+    max_new_tokens,
+    eos_token_id=None,
+    temperature=0.,
+    top_p=None
+):
+    model.eval()
+    cache = KVCache(n_layers=model.cfg["n_layers"])
+    model.reset_kv_cache()
+
+    out = model(token_ids, cache=cache)[:, -1]  #1
+    for _ in range(max_new_tokens):
+
+        orig_device = token_ids.device
+
+        if temperature is None or temperature == 0.0:
+            next_token = torch.argmax(out, dim=-1, keepdim=True)
+
+        else:
+            logits = scale_logits_by_temperature(out, temperature)  #2
+            probas = torch.softmax(logits, dim=-1)  #3
+
+            probas = top_p_filter(probas, top_p)  #4
+
+            next_token = torch.multinomial(probas.cpu(), num_samples=1) #5
+            next_token = next_token.to(orig_device)
+
+        if (eos_token_id is not None
+                and torch.all(next_token == eos_token_id)):
+            break
+
+        yield next_token
+        out = model(next_token, cache=cache)[:, -1]
+\end{codeboxt}
+{\noindent\small\textit{\#1 第 3.1 步：获取 logits \newline \#2 第 3.2 步：对 logits 应用温度缩放 \newline \#3 第 3.3 步：转换为概率 \newline \#4（新增）第 4 步：对概率应用 top-p 过滤 \newline \#5 第 3.4 步：按概率采样词元}\par}
+
+我们把这个新的文本生成函数接入 \texttt{generate\_text\_stream\_concat\_flex}，就像之前对温度缩放版文本生成函数所做的那样：
+
+\begin{codebox}
+torch.manual_seed(123)
+response = generate_text_stream_concat_flex(
+    model, tokenizer, prompt, device,
+    max_new_tokens=2048, verbose=True,
+    generate_func=generate_text_top_p_stream_cache,
+    temperature=0.5,
+    top_p=0.8,
+)
+\end{codebox}
+
+输出是 \texttt{"}\texttt{ \textbackslash boxed\{18\}}\texttt{"}，仍然是错的。到目前为止我们所做的一切都是为了让我们能够采样出不同的输出。下一节，在实现自洽性推理时扩展技术时，我们会用 \texttt{generate\_text\_stream\_concat\_flex} 搭配扩充后的文本生成函数（\texttt{generate\_text\_top\_p\_stream\_cache}）来采样不同的输出。
+
+\begin{mySidebar}{top-\emph{k} 过滤}
+
+top-\emph{k} 过滤是在采样时限制下一个词元候选集合的另一种方式。不同于保留累积概率低于阈值的所有词元（如 top-\emph{p} 那样），top-\emph{k} 只保留基于模型 logits 而言最可能的 \emph{k} 个词元。
+
+在按概率对词表排序后，前 \emph{k} 个条目之后的所有内容都会被移除。随后对剩余的 \emph{k} 个词元重新归一化并从中采样。
+
+简而言之，top-\emph{k} 保留固定数量的最可能词元，而 top-\emph{p} 保留的词元数量是可变的，取决于它们的累积概率质量。
+
+top-\emph{k} 实现起来更简单，我在\emph{《从零构建大语言模型》}一书中介绍过它。最近 top-\emph{p} 采样变得更流行。
+
+\end{mySidebar}
+
+\begin{mySidebar}{练习 4.2：在 MATH-500 上使用温度缩放和 top-\emph{p} 过滤}
+
+修改代码清单 3.15 中的 \texttt{evaluate\_math500\_stream} 函数，看看加入温度缩放和 top-\emph{p }采样是否会改变基础模型在 MATH-500 上的准确率。温度缩放和 top-\emph{p} 都可以取 0.9。
+
+\end{mySidebar}
+
+\section{用自洽性提升回复准确率}
+
+现在我们已经编写好温度缩放和 top-\emph{p} 过滤，可以着手实现本章第二种推理时扩展技术了：自洽性采样。
+
+自洽性采样背后的思想由 Google Research 的论文 "Self-Consistency Improves Chain-of-Thought Reasoning in Language Models\emph{"}（\href{https://arxiv.org/abs/2203.1117}{https://arxiv.org/abs/2203.1117}）提出。尽管名字听起来很高大上，自洽性采样本质上是一种多数投票：我们用温度缩放和 top-\emph{p} 过滤生成多个答案，然后选出出现最频繁的那个，如图 4.17 所示。
+
+\myGraphic{0.92}{images/CH04_F17_Raschka2.png}{图 4.17 自洽性采样方法从 LLM 生成多个回复并选出出现最频繁的答案，通过多数投票提升答案准确率。}
+
+图 4.17 所示的自洽性采样技术之所以算作一种推理时扩展技术，是因为我们不更新模型本身，而是消耗更多计算资源来提升回复准确率。
+
+为了构建基于投票的推理时流水线，我们会复用第 2 章的生成代码、第 3 章的答案提取逻辑，以及本章的采样控制。得益于 \texttt{generate\_text\_stream\_concat\_flex} 函数，自洽性的代码实现相对直接。主要流程可以概括为三个步骤，如图 4.18 所示。
+
+\myGraphic{0.92}{images/CH04_F18_Raschka2.png}{图 4.18 实现自洽性采样的三个主要步骤。第一步，我们使用大于零的温度和 top-\emph{p} 过滤为同一提示生成多个答案。第二步，我们从每个生成的解答中提取最终的带框答案。第三步，我们选出被提取次数最多的答案作为最终预测。}
+
+要实现图 4.18 所示的三个步骤，我们只需反复调用 \texttt{generate\_text\_stream\_concat\_flex} 来生成多个答案，并复用第 3 章的 \texttt{extract\_final\_candidate} 函数。唯一新增的代码是根据答案出现频率实现多数投票。
+
+\begin{codeboxt}{代码清单 4.17 带 top-\emph{p} 过滤的文本生成}
+from reasoning_from_scratch.ch03 import extract_final_candidate
+from collections import Counter
+
+def self_consistency_vote(
+    model, tokenizer, prompt, device,
+    num_samples=10, temperature=0.8, top_p=0.9, max_new_tokens=2048,
+    show_progress=True, show_long_answer=False, seed=None,
+):
+    full_answers, short_answers = [], []
+
+    for i in range(num_samples):  #1
+        if seed is not None:
+            torch.manual_seed(seed + i + 1)
+
+        answer = generate_text_stream_concat_flex(
+            model=model, tokenizer=tokenizer, prompt=prompt, device=device,
+            max_new_tokens=max_new_tokens, verbose=show_long_answer,
+            generate_func=generate_text_top_p_stream_cache,
+            temperature=temperature, top_p=top_p,
+        )
+
+        short = extract_final_candidate(           #2
+            answer, fallback="number_then_full"     #2
+        )                                           #2
+        full_answers.append(answer)
+        short_answers.append(short)
+        if show_progress:
+            print(f"[Sample {i+1}/{num_samples}] -> {short!r}")
+
+    counts = Counter(short_answers)
+    groups = {s: [] for s in counts}
+    for idx, s in enumerate(short_answers):
+        groups[s].append(idx)
+
+    mc = counts.most_common()  #3
+    if not mc:
+        majority_winners, final_answer = [], None
+    else:
+        top_freq = mc[0][1]
+        majority_winners = [s for s, f in mc if f == top_freq]
+        final_answer = mc[0][0] if len(majority_winners) == 1 else None
+
+    return {
+        "full_answers": full_answers,
+        "short_answers": short_answers,
+        "counts": dict(counts),
+        "groups": groups,
+        "majority_winners": majority_winners,
+        "final_answer": final_answer,
+    }
+\end{codeboxt}
+{\noindent\small\textit{\#1 1) 采样多个答案 \newline \#2 2) 从每个答案中提取最终的（简短）答案 \newline \#3 3) 选择出现最频繁的最终答案（自洽性投票）}\par}
+
+简而言之，代码清单 4.17 中的自洽性方法做了以下事情：
+
+\begin{enumerate}
+\item 使用大于 0 的温度和 top-\emph{p} 采样多个答案
+\item 从每个回复中提取最终的带框答案
+\item 选出出现最频繁的最终答案
+\end{enumerate}
+
+注意，在我们的实现中，我们用一个 \texttt{for} 循环依次生成这些答案。在实践中，也常常在不同设备上生成答案，以便将采样并行化。
+
+此外，在前面的代码中，我们为每一轮单独设置随机种子：
+
+\begin{codebox}
+        if seed is not None:
+            torch.manual_seed(seed + i + 1)
+\end{codebox}
+
+从技术上讲，这并非必要；设置一次随机种子就足以生成多样化的样本。如果我们想单独重跑其中某些轮次，这种显式设置种子才有用。
+
+我们试试这个函数，看看能得到什么：
+
+\begin{codebox}
+results = self_consistency_vote(
+    model,
+    tokenizer,
+    prompt,
+    device=device,
+    num_samples=5,
+    temperature=0.8,
+    top_p=0.9,
+    max_new_tokens=2048,
+    seed=123,
+    show_progress=True,
+)
+\end{codebox}
+
+打印的结果如下：
+
+\begin{codebox}
+[Sample 1/5] -> '83'
+[Sample 2/5] -> '22'
+[Sample 3/5] -> '54'
+[Sample 4/5] -> '83'
+[Sample 5/5] -> '61'
+\end{codebox}
+
+由于 83 是出现最频繁的答案，最终答案是 83（我们可以通过 \texttt{results[}\texttt{"}\texttt{final\_answer}\texttt{"}\texttt{]} 以编程方式访问这个数字）。如果你想阅读解释和完整答案，可以访问返回 83 的某个正确解答；例如，\texttt{print(results[}\texttt{"}\texttt{full\_answers}\texttt{"}\texttt{][0])} 会打印如下内容：
+
+\begin{codebox}
+To find the value of x, let's solve the equation step by step.
+
+1. **Given Equation:**
+   \[
+   \frac{1}{2} \times (3x - 9) = x + 37
+   \]
+
+# ...
+
+**Final Answer:**
+\[
+\boxed{83}
+\]
+\end{codebox}
+
+通过这种自洽性方法，我们终于能够生成正确答案了。（注意，在 \texttt{"}\texttt{mps}\texttt{"} 或 \texttt{"}\texttt{cuda}\texttt{"} 设备上运行代码时，结果可能会有所不同。）
+
+\texttt{self\_consistency\_vote} 函数目前不处理平票情况，因此如果多个样本出现频率相同，它会返回 \texttt{None} 作为最终答案。下一章我们将实现一种打分方法，用于计算给定答案的置信度，可作为平票的裁决依据。
+
+\begin{mySidebar}{练习 4.3：在 MATH-500 上使用自洽性采样}
+
+修改代码清单 3.15 中的 \texttt{evaluate\_math500\_stream} 函数，评估自洽性采样能否提升基础模型在 MATH-500 上的准确率。使用样本量 3，并把温度和 top-\emph{p} 都设为 0.9。
+
+作为本练习的一部分，实现平票裁决：当出现平票时，以样本列表中最早出现的答案为准。例如，如果样本答案是 13、15、13、15、16，则选出的答案应为 13。
+
+注意，你不必为了实现这条平票裁决规则而去修改 \texttt{self\_consistency\_vote} 本身；你可以改为处理该函数返回的 \texttt{results} 字典。
+
+\end{mySidebar}
+
+\begin{mySidebar}{练习 4.4：自洽性采样中的提前停止}
+
+为提升计算效率，实现一个提前停止版的自洽性方法：一旦超过半数答案一致，就结束采样。
+
+\end{mySidebar}
+
+\begin{mySidebar}{选择温度和 top-\emph{p} 设置}
+
+我们已经讨论过温度，但实际问题是：在自洽性采样中我们应该引入多少随机性。我们的目标不是让模型尽可能随机，而是生成足够多样、能让多数投票发挥作用的答案，同时仍让大多数样本保持合理。在实践中，温度取 0.5 到 0.9 左右、top-\emph{p} 取 0.7 到 0.9 左右是合理的起点。
+
+根据经验，如果所有长答案看起来几乎一模一样，不妨稍微调高温度或 top-\emph{p} 值以促进更多多样性。如果长答案开始显得不对劲或无意义，说明设置很可能过于激进，应当调低，通常先降低温度。这里所说的“长答案”指的是在提取最终带框结果之前的完整答案。你可以查看 \texttt{self\_consistency\_vote} 函数返回的 results 字典中的长答案，也可以用 \texttt{show\_long\_answer=True} 设置运行该函数。
+
+\end{mySidebar}
+
+你可能还记得，描述该技术的论文标题是“Self-Consistency Improves Chain-of-Thought Reasoning in Language Models”。那么其中的“思维链推理”这一要素又体现在哪里呢？这里的思维链推理，指的就是本章前面介绍思维链提示时，我们通过 \texttt{"}\texttt{\textbackslash n\textbackslash n} \texttt{Explain} \texttt{step} \texttt{by} \texttt{step.}\texttt{"} 修改提示，使 LLM 生成更长的回复。
+
+我们把思维链提示与自洽性采样结合起来：
+
+\begin{codebox}
+results = self_consistency_vote(
+    model,
+    tokenizer,
+    prompt + "\n\nExplain step by step.",
+    device=device,
+    num_samples=5,
+    temperature=0.8,
+    top_p=0.9,
+    max_new_tokens=2048,
+    seed=123,
+    show_progress=True,
+)
+\end{codebox}
+
+在这个例子中，五个答案全都是 83（正确），很可能是因为在使用思维链时，这个问题对 LLM 来说相对简单。更有意思的是看看模型在完整的 MATH-500 数据集上表现如何。各项实验的结果如表 4.1 所示。
+
+\begin{table}[htbp]
+\centering\small
+\centering
+\caption{表 4.1 不同方法在 MATH-500 任务上的准确率}
+\begin{tabularx}{\linewidth}{@{}c@{}XXXX}
+\toprule
+ & 方法 & 模型 & 准确率 & 时间 \\
+1 & 基线（第 3 章），贪心解码 & 基础 & 15.2\% & 10.1 min \\
+2 & 基线（第 3 章），贪心解码 & 推理 & 48.2\% & 182.1 min \\
+3 & 思维链提示（CoT） & 基础 & 40.6\% & 84.5 min \\ \addlinespace
+
+4 & 温度与 top-\emph{p}（Top-\emph{p}） & 基础 & 17.8\% & 30.7 min \\
+5 & Top-\emph{p} + 自洽性（\emph{n}=3） & 基础 & 29.6\% & 97.6 min \\
+6 & Top-\emph{p} + 自洽性（\emph{n}=5） & 基础 & 27.8\% & 116.8 min \\
+7 & Top-\emph{p} + 自洽性（\emph{n}=10） & 基础 & 31.6\% & 300.4 min \\ \addlinespace
+
+8 & Top-\emph{p} + CoT & 基础 & 33.4\% & 129.2 min \\
+9 & 自洽性（\emph{n}=3）+ Top-\emph{p} + CoT & 基础 & 42.2\% & 211.6 min \\
+10 & 自洽性（\emph{n}=5）+ Top-\emph{p} + CoT & 基础 & 48.0\% & 452.9 min \\
+11 & 自洽性（\emph{n}=10）+ Top-\emph{p} + CoT & 基础 & 52.0\% & 862.6 min \\
+12 & 自洽性（\emph{n}=3）+ Top-\emph{p} + CoT & 推理 & 55.2\% & 544.4 min \\ \bottomrule
+\end{tabularx}
+\end{table}
+
+为简洁起见，表 4.1 中标注为“Top-\emph{p}”的方法同时使用了温度缩放和 top-\emph{p} 采样。表中所示的准确率值是在 MATH-500 测试集的全部 500 个样本上、使用 \texttt{"}\texttt{cuda}\texttt{"} GPU（DGX Spark）计算得出的。
+
+我们逐一来看这些结果。\emph{n} = 3 表示自洽性采样使用的样本量为 3。第 1 行和第 2 行展示了基础变体与推理变体使用第 3 章代码的结果；也就是说，我们使用的是不带温度缩放或 top-\emph{p} 过滤的文本生成函数。这个文本生成函数只是在每一步选择得分最高的词元（贪心解码）。可以看到，推理变体的准确率约为基础变体的三倍，但运行时间也长得多，因为它会生成更多词元。
+
+第 3 行展示了使用 \texttt{"}\texttt{\textbackslash n\textbackslash nExplain} \texttt{step} \texttt{by} \texttt{step.}\texttt{"}\texttt{ }提示修改的思维链提示方法的结果。可以看到，这把基础模型的准确率从约 15\% 提升到了 40\%。
+
+第 4 行展示了在基础模型上加入温度缩放和 top-\emph{p} 采样的效果。（表 4.1 中所有涉及温度缩放和 top-\emph{p} 采样的实验，两者都取 0.9。）相比第 1 行的基础模型，准确率只有适度提升，从 15.2\% 提高到 17.8\%。这在意料之中，因为温度缩放和 top-\emph{p} 采样只是帮助我们控制采样多样性，它们本身并不是推理时扩展技术。我们还可以看到，运行时间从 10.1 min 增加到 30.7 min。这并不是采样代码开销造成的，而是因为模型现在在某些情况下会生成更长的回复。
+
+第 5–7 行展示了自洽性扩展的结果。把样本数从 3 增加到 10 进一步将准确率提升到 31.6\%，但也显著增加了运行时间。在这个例子中，用 10 个样本相比 3 个样本几乎没有任何准确率优势。
+
+第 8 行展示了温度缩放和 top-\emph{p} 采样与思维链提示相结合的结果。在这个例子中，采样让思维链的结果变差了（33.4\%，而第 3 行是 40.6\%）。把思维链提示与自洽性结合，在样本量为 10 时把准确率提升到 52\%，但也把运行时间大幅推高到惊人的 862.6 分钟。
+
+在实践中，如果你有多块 GPU 可用，自洽性采样中的不同样本可以并行计算而非串行计算。这仍然会消耗相同的计算量，但可以分散到多块 GPU 上，从而更快地得出结果。
+
+最后，在第 12 行可以看到，推理变体也能从自洽性采样中受益，准确率从第 2 行的 48.2\% 提升到 55.2\%。同样，这伴随着运行时间的增加。
+
+结论是，表 4.1 中的结果凸显了推理时扩展的取舍：用更多计算量换取更高准确率。
+
+本章介绍的自洽性采样方法有一个主要缺点：它依赖一个可提取用于多数投票的最终带框答案。对于没有数值或简短最终答案的问题，这种方法更难应用。
+
+下一章，如图 4.19 所示，我们将实现另一种更通用的推理时扩展方法，称为\emph{自我修正}，即让模型迭代地改进自己的答案。
+
+\myGraphic{0.92}{images/CH04_F19_Raschka2.png}{图 4.19 本章对推理时技术聚焦点的总结。这里，文本生成函数被扩展为一种基于投票的方法，以提升答案准确率。下一章将介绍自我修正，即模型迭代地改进自己的回复。}
+
+\section{小结}
+
+\begin{itemize}
+\item 通过在推理时增加计算量（推理时扩展），无需重新训练模型即可提升推理能力和答案准确率。
+\item 一个灵活的文本生成包装函数（\texttt{generate\_text\_stream\_concat\_flex}）允许在不改动周边代码的情况下接入不同的采样策略。
+\item 下一个词元由 logits 经 softmax 产生。
+\item 温度缩放通过改变 logits 来控制生成文本的多样性。
+\item top-\emph{p}（核）采样会滤除低概率词元，以降低生成无意义答案的可能性。
+\item 思维链提示（例如“Explain step by step.”）通过鼓励模型写出中间推理，往往能得到更准确的答案，尽管它会增加生成的词元数量，进而增加运行时间开销。
+\item 自洽性采样生成多个答案，从每个答案中提取最终带框结果，并通过多数投票选出出现最频繁的答案，以提升答案准确率。
+\item 在 MATH-500 数据集上的实验表明，与不采样的基线相比，把思维链提示与自洽性结合可以大幅提升准确率，代价是运行时间长得多。
+\item 推理时扩展的核心取舍是：用更多计算量换取更高准确率。
+\end{itemize}

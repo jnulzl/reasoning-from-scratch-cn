@@ -1,0 +1,351 @@
+本书的配套代码仓库包含一个小型的、基于浏览器的聊天界面，它是用开源 Python 包 Chainlit 构建的（\href{https://github.com/Chainlit/chainlit}{https://github.com/Chainlit/chainlit}）。这个类似 ChatGPT 的界面让我们可以与本书中的各种 LLM 和推理模型进行交互，如图 G.1 中的截图所示。当我们想要一种比在 notebook 单元格或终端中输入提示更便捷的方式来与模型交互时，这个界面会很有用。
+
+\myGraphic{0.92}{images/APPG_F01_Raschka2.png}{图 G.1 用于 Qwen3 模型的 Chainlit 界面，模仿了 ChatGPT 界面}
+
+由于建立在 Chainlit 库之上，这个界面的实现相对直接。我们不再把词元打印到终端，而是把前面各章中相同的模型加载与生成函数封装进一个小型 Web 应用，该应用运行在浏览器中并保留在本地计算机上。实际上，这意味着我们可以复用从零实现的 \texttt{Qwen3Model} 以及第 2 章的流式辅助函数，同时让 Chainlit 负责浏览器 UI 和消息事件。
+
+本书的配套资料在 \texttt{chG/01\_main-chapter-code} 中提供了该界面的两个版本（\href{https://github.com/rasbt/reasoning-from-scratch/tree/main/chG/01\_main-chapter-code}{https://github.com/rasbt/reasoning-from-scratch/tree/main/chG/01\_main-chapter-code}）：
+
+\begin{itemize}
+\item \texttt{qwen3\_chat\_interface.py} 是单轮（single-turn）界面。
+\item \texttt{qwen3\_chat\_interface\_multiturn.py} 会保存对话历史并支持多轮（multi-turn）交互。
+\end{itemize}
+
+在本附录中，我们将逐一讲解这两个版本。还会讨论如何安装 Chainlit，以及如何通过第 7 章的 \texttt{download\_from\_github} 辅助函数下载这些脚本。
+
+\section{安装 Chainlit}
+
+在运行聊天界面之前，我们首先需要安装 Chainlit。这是最简单的做法：
+
+\begin{codebox}
+pip install chainlit
+\end{codebox}
+
+如果你使用的是 \texttt{uv}，则等价命令为：
+
+\begin{codebox}
+uv add chainlit
+\end{codebox}
+
+如果你直接在 \texttt{reasoning-from-scratch} 仓库中工作，Chainlit 也已作为可选依赖列在项目的 \texttt{pyproject.toml} 中。这种情况下，下面是一种方便的替代方式：
+
+\begin{codebox}
+uv sync --extra extra
+\end{codebox}
+
+或者
+
+\begin{codebox}
+pip install -e ".[extra]"
+\end{codebox}
+
+\section{以脚本方式运行代码}
+
+Chainlit 运行的是普通的 Python 脚本。这一点很重要，因为 Chainlit 会把脚本作为模块导入，并寻找用 \texttt{@chainlit.on\_chat\_start} 和 \texttt{@chainlit.on\_message} 装饰的特殊函数，稍后我们会看到。
+
+这意味着，如果想复用本附录中展示的代码，应当把它放入一个 \texttt{.py} 文件中，例如
+
+\begin{codebox}
+qwen3_chat_interface.py
+\end{codebox}
+
+或者
+
+\begin{codebox}
+app.py
+\end{codebox}
+
+然后在终端中按如下方式启动：
+
+\begin{codebox}
+chainlit run app.py
+\end{codebox}
+
+或者，如果使用 \texttt{uv}，命令为
+
+\begin{codebox}
+uv run chainlit run app.py
+\end{codebox}
+
+换句话说，虽然可以在 notebook 中查看代码，但实际的 Chainlit 应用需要放在一个独立的 Python 脚本中。
+
+\section{下载脚本}
+
+如果你已克隆该仓库，这些文件已经存在于 \texttt{chG/01\_main-chapter-code} 中，可以跳过本节。否则，如第 7 章所述，可以使用 \texttt{download\_from\_github(...)} 获取这两个脚本。
+
+\begin{codeboxt}{代码清单 G.1 下载 Chainlit 脚本}
+from reasoning_from_scratch.ch07 import download_from_github
+
+download_from_github(
+    "chG/01_main-chapter-code/qwen3_chat_interface.py"
+)
+download_from_github(
+    "chG/01_main-chapter-code/qwen3_chat_interface_multiturn.py"
+)
+\end{codeboxt}
+
+\section{常规单轮脚本}
+
+该界面的常规单轮版本位于 \texttt{qwen3\_chat\_interface.py}，它有意识地保持紧凑。它几乎直接复用了第 2 章的 LLM 与推理代码，并用尽可能少的 Chainlit 专用逻辑对其进行了封装。这里的“单轮”意味着我们可以提交多个查询，但每个查询彼此独立，不会感知到上一个查询。
+
+这段代码相对简短，下面完整给出。
+
+\begin{codeboxt}{代码清单 G.2 用于单轮查询的 Chainlit 脚本}
+import os
+from pathlib import Path
+
+import torch
+import chainlit
+
+from reasoning_from_scratch.ch02 import (
+    get_device,
+)
+from reasoning_from_scratch.ch02 import generate_text_basic_stream_cache
+from reasoning_from_scratch.ch03 import (
+    load_model_and_tokenizer,
+    load_tokenizer_only
+)
+from reasoning_from_scratch.qwen3 import Qwen3Model, QWEN_CONFIG_06_B#1
+
+WHICH_MODEL = "reasoning"  #2
+MAX_NEW_TOKENS = 38912
+LOCAL_DIR = "qwen3"
+CHECKPOINT_PATH = os.getenv("CHECKPOINT_PATH")
+COMPILE = False
+
+DEVICE = get_device()
+
+def load_app_model_and_tokenizer():
+    if CHECKPOINT_PATH is None:
+        return load_model_and_tokenizer(
+            which_model=WHICH_MODEL,
+            device=DEVICE,
+            use_compile=COMPILE,
+            local_dir=LOCAL_DIR,
+        )
+
+    checkpoint_path = Path(CHECKPOINT_PATH)  #3
+    if not checkpoint_path.exists():
+        raise FileNotFoundError(
+            f"Checkpoint file not found: {checkpoint_path}"
+        )
+
+    tokenizer = load_tokenizer_only(
+        which_model=WHICH_MODEL, local_dir=LOCAL_DIR
+    )
+    model = Qwen3Model(QWEN_CONFIG_06_B)
+    model.load_state_dict(
+        torch.load(checkpoint_path, map_location="cpu")
+    )
+    model.to(DEVICE)
+
+    if COMPILE:
+        torch._dynamo.config.allow_unspec_int_on_nn_module = True
+        model = torch.compile(model)
+
+    return model, tokenizer
+
+MODEL, TOKENIZER = load_app_model_and_tokenizer()
+
+EOS_TOKEN_IDS = (
+    TOKENIZER.encode("<|im_end|>")[0],
+    TOKENIZER.encode("<|endoftext|>")[0]
+)
+
+@chainlit.on_chat_start  #4
+async def on_start(): #4
+    chainlit.user_session.set("history", []) #4
+    chainlit.user_session.get("history").append( #4
+        {"role": "system", "content": "You are a helpful assistant."} #4
+    ) #4
+
+@chainlit.on_message#5
+async def main(message: chainlit.Message): #5
+
+    input_ids = TOKENIZER.encode(message.content)#6
+    input_ids_tensor = torch.tensor(input_ids, device=DEVICE).unsqueeze(0)
+
+    out_msg = chainlit.Message(content="")#7
+    await out_msg.send() #7
+
+    for tok in generate_text_basic_stream_cache(#8
+        model=MODEL,
+        token_ids=input_ids_tensor,
+        max_new_tokens=MAX_NEW_TOKENS,
+    ):
+        token_id = tok.squeeze(0).item()
+        if token_id in EOS_TOKEN_IDS:
+            break
+        piece = TOKENIZER.decode([token_id])
+        await out_msg.stream_token(piece)
+
+    await out_msg.update()#9
+\end{codeboxt}
+{\noindent\small\textit{\#1 配置部分 s \newline \#2 对于基础模型，改为 “base”。 \newline \#3 可选：加载第 7 章或第 8 章训练好的检查点。 \newline \#4 初始化每个会话的状态，并用默认系统提示为其设置初始值。 \newline \#5 处理一条用户消息，并将模型回复流式输出到 Chainlit 界面。 \newline \#6 编码输入。 \newline \#7 开始一条可以流式写入的待发消息。 \newline \#8 流式生成。 \newline \#9 完成这条流式消息。}\par}
+
+代码清单 G.2 中的 \texttt{CHECKPOINT\_PATH} 环境变量是可选的。如果设置了它，脚本会加载该自定义 \texttt{.pth} 检查点，而不是默认的官方权重。\texttt{load\_app\_model\_and\_tokenizer()} 辅助函数会处理这两种情况。如果没有提供自定义检查点，它会委托给第 3 章的 \texttt{load\_model\_and\_tokenizer(...)}。如果提供了自定义检查点路径，它只通过 \texttt{load\_tokenizer\_only(...)} 加载分词器，构造一个新的 \texttt{Qwen3Model(QWEN\_CONFIG\_06\_B)}，然后从自定义状态字典中加载权重。
+
+这很有用，因为它意味着只要分词器设置与检查点保持一致，单轮 Chainlit 界面也可以用来交互式地查看第 6、7、8 章的检查点。下一节将具体说明如何从命令行把自定义检查点作为输入传入。
+
+\texttt{@chainlit.on\_chat\_start} 函数会初始化一个历史对象，并插入一条默认的系统消息，这是一种常见的约定：
+
+\begin{codebox}
+{"role": "system", "content": "You are a helpful assistant."}
+\end{codebox}
+
+但单轮脚本在生成回复时实际上并不会使用所存储的历史。在 \texttt{main(...)} 内部，提示仅根据当前的 \texttt{message.content} 构建：
+
+\begin{codebox}
+input_ids = TOKENIZER.encode(message.content)
+\end{codebox}
+
+因此，尽管浏览器 UI 看起来像一个聊天应用，但单轮版本的行为更像一个提示框：它只是把较早的消息显示出来，而模型实际上并不记得之前的对话。换句话说，模型本身只看到当前这条用户消息，并把每一轮都独立对待。
+
+生成逻辑的其余部分与第 2 章所看到的非常相似。
+
+\section{运行单轮脚本}
+
+如果你位于配套代码仓库中，启动该用户界面最方便的命令通常是下面这条：
+
+\begin{codebox}
+uv run chainlit run chG/01_main-chapter-code/qwen3_chat_interface.py
+\end{codebox}
+
+如果以其他文件名保存代码，例如 \texttt{app.py}，只需相应地替换路径即可：
+
+\begin{codebox}
+uv run chainlit run app.py
+\end{codebox}
+
+启动服务器后，Chainlit 通常会自动打开一个浏览器标签页。如果没有，可以手动把终端中显示的本地地址复制到浏览器中。通常是 \texttt{http: //localhost: 8000}。
+
+图 G.2 展示了 Chainlit 界面中的一些示例输出。
+
+\myGraphic{0.92}{images/APPG_F02_Raschka2.png}{图 G.2 Chainlit 界面中的示例回复}
+
+默认情况下，脚本初始化的是我在第 3 章简要介绍的 Qwen3 推理变体，图 G.2 中的回复就是由它生成的。若要用自定义检查点运行同一个脚本，可以通过 \texttt{CHECKPOINT\_PATH} 环境变量传入路径。示例如下：
+
+\begin{codebox}
+CHECKPOINT_PATH=path/to/qwen3-0.6B-distill-step06682-epoch1.pth \
+uv run chainlit run chG/01_main-chapter-code/qwen3_chat_interface.py
+\end{codebox}
+
+这样做时，\texttt{WHICH\_MODEL} 必须与检查点所期望的分词器保持一致。第 8 章的蒸馏检查点使用推理分词器，因此在这种情况下应保持 \texttt{WHICH\_MODEL = }\texttt{"}\texttt{reasoning}\texttt{"}。而对于第 6 章的检查点，则应把它改为 \texttt{WHICH\_MODEL = }\texttt{"}\texttt{base}\texttt{"}。
+
+直接在脚本中编辑配置可能显得有些麻烦。之所以这样做而不是使用命令行参数，是因为 Chainlit 本身通过 \texttt{chainlit run ...} 启动并管理应用入口。因此，该脚本的行为不像普通的独立 Python 程序那样，可以用 Python 的 \texttt{argparse} 库自由定义和解析自定义命令行参数。对于模型选择、生成长度或检查点路径这类简单选项，把设置保留在脚本中，或通过环境变量传入，会更加方便。
+
+\begin{mySidebar}{下载模型检查点}
+
+如果你想探索第 6、7、8 章的某些模型检查点，但自己没有足够的算力来训练它们，可以在配套资料 \href{https://github.com/rasbt/reasoning-from-scratch/tree/main/ch07/04\_download\_trainining\_checkpoints}{https://github.com/rasbt/reasoning-from-scratch/tree/main/ch07/04\_download\_trainining\_checkpoints} 和 \href{https://github.com/rasbt/reasoning-from-scratch/tree/main/ch08/05\_download\_training\_checkpoints}{https://github.com/rasbt/reasoning-from-scratch/tree/main/ch08/05\_download\_training\_checkpoints} 中找到关于如何下载它们的信息。
+
+\end{mySidebar}
+
+\section{多轮界面}
+
+第二个脚本 \texttt{qwen3\_chat\_interface\_multiturn.py} 扩展了基本的 Chainlit 界面，使模型能够以同一段对话中较早的轮次为条件。接下来的几小节将说明多轮在实践中意味着什么、脚本如何实现它，以及何时适合使用。
+
+\subsection{多轮的含义}
+
+在单轮设置中，模型只看到当前输入。为便于说明，假设交互过程如下：
+
+\begin{codebox}
+User: What is 1 + 1?
+Assistant: 2
+User: What did I just ask?
+\end{codebox}
+
+在常规单轮脚本中，当模型收到第二条消息 \texttt{"}\texttt{What did} \texttt{I} \texttt{just} \texttt{ask?}\texttt{"} 时，它可能回复 \texttt{"}\texttt{I} \texttt{don}\texttt{'}\texttt{t} \texttt{know} \texttt{what} \texttt{you are} \texttt{asking}\texttt{"}。先前的问答在浏览器中可见，但没有包含在模型输入里，所以模型并没有真正的对话记忆。
+
+在多轮设置（\texttt{qwen3\_chat\_interface\_multiturn.py}）中，我们会显式地把较早的消息包含进提示，更确切地说，是把它\emph{前置}到提示中，这与 ChatGPT 和其他聊天助手的做法类似。在这种情况下，模型可能会用 \texttt{"}\texttt{You} \texttt{asked} \texttt{me} \texttt{what} \texttt{1+1} \texttt{is}\texttt{"} 来回答 \texttt{"}\texttt{What} \texttt{did} \texttt{I} \texttt{just} \texttt{ask?}\texttt{"} 这个问题。
+
+\subsection{多轮变体}
+
+多轮脚本的开头部分与常规版本相同，但它新增了两个辅助函数，并在生成过程中使用所存储的会话历史。
+
+下面代码清单中的第一个辅助函数会把所存储的消息历史转换为我们所需的 Qwen 聊天格式。
+
+\begin{codeboxt}{代码清单 G.3 根据对话历史构建提示}
+def build_prompt_from_history(history, add_assistant_header=True):
+    parts = []
+    for m in history:
+        role = m["role"]
+        content = m["content"]
+        parts.append(f"<|im_start|>{role}\n{content}<|im_end|>\n")
+
+    if add_assistant_header:
+        parts.append("<|im_start|>assistant\n")
+    return "".join(parts)
+\end{codeboxt}
+
+上一个代码清单中的 \texttt{build\_prompt\_from\_history} 函数会把消息列表序列化成 Qwen 推理模型所期望的聊天模板风格。从概念上讲，得到的提示如下所示：
+
+\begin{codebox}
+<|im_start|>system
+You are a helpful assistant.<|im_end|>
+<|im_start|>user
+What is 1 + 1?<|im_end|>
+<|im_start|>assistant
+2<|im_end|>
+<|im_start|>user
+What did I just ask?<|im_end|>
+<|im_start|>assistant
+\end{codebox}
+
+随后，模型便从这个结尾的助手头部开始继续生成。
+
+接下来展示的第二个辅助函数会在消息超出上下文长度时对其进行裁剪，因为多轮对话可能会变得非常长。
+
+\begin{codeboxt}{代码清单 G.4 裁剪提示以适配上下文窗口}
+def trim_input_tensor(input_ids_tensor, context_len, max_new_tokens):
+    assert max_new_tokens < context_len
+    keep_len = max(1, context_len - max_new_tokens)
+
+    if input_ids_tensor.shape[1] > keep_len: #1
+        input_ids_tensor = input_ids_tensor[:, -keep_len:]
+
+    return input_ids_tensor
+\end{codeboxt}
+{\noindent\small\textit{\#1 如果提示过长，则从左侧截断到 keep\_len。}\par}
+
+这个 \texttt{trim\_input\_tensor} 辅助函数会确保上下文窗口中为新词元留出足够的空间。如果对话变得过长，最早的词元会先通过左侧截断被丢弃。（也存在其他更精细的做法，例如对先前的上下文进行摘要，但为简单起见，这里没有实现。）
+
+\subsection{多轮脚本如何使用历史}
+
+多轮行为体现在消息处理函数内部。在每一轮开始时，脚本会取出当前会话历史，并追加新的用户消息：
+
+\begin{codebox}
+history = chainlit.user_session.get("history")
+history.append({"role": "user", "content": message.content})
+\end{codebox}
+
+随后，它会根据该历史构建完整的提示，对其进行分词，按需裁剪，并像之前一样流式输出答案。生成结束时，它会把模型回复存回同一个历史列表中：
+
+\begin{codebox}
+history.append({"role": "assistant", "content": out_msg.content})
+chainlit.user_session.set("history", history)
+\end{codebox}
+
+这就是多轮脚本与单轮脚本的核心区别。多轮版本并不只是在浏览器中显示聊天记录；它会把较早的轮次回传给模型，使后续回复能够以这些轮次为条件。
+
+启动命令与单轮情况类似：
+
+\begin{codebox}
+uv run chainlit run chG/01_main-chapter-code/qwen3_chat_interface_multiturn.py
+\end{codebox}
+
+从使用上看，该脚本的行为与常规 Chainlit 界面完全一致，如图 G.3 所示。唯一的区别在于提示在内部是如何构建的。
+
+\myGraphic{0.92}{images/APPG_F03_Raschka2.png}{图 G.3 Chainlit 界面中包含多条提示与回复的示例回复}
+
+图 G.3 中的第二条回复表明，模型通过所提供的上下文记住了第一个问题。
+
+\subsection{建议}
+
+多轮 Chainlit 脚本是为官方 Qwen3 推理变体设计的。例如，它并不适合第 8 章的蒸馏检查点，因为这些蒸馏检查点是在提示—回复式的监督数据上训练的，而不是在持续的多轮聊天历史上训练的。它们不像官方推理检查点那样，经过训练来在多个轮次中延续一段对话。
+
+因此，不应期望多轮脚本能在蒸馏检查点上稳定运行。我建议这样使用它们：
+
+\begin{itemize}
+\item 用单轮 Chainlit 脚本进行快速的交互式测试，包括第 6、7、8 章的自定义检查点。
+\item 当需要对话记忆时，用多轮 Chainlit 脚本搭配官方的推理检查点。
+\end{itemize}

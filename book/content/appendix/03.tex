@@ -1,0 +1,722 @@
+尽管这是一本“\emph{从零}”类图书，但书名中的这部分指的是推理技术，而不是 LLM 本身。要从零完整实现一个 LLM，需要另写一本书，例如我写的\emph{《从零构建大语言模型》}，同样由 Manning 出版（\href{http://mng.bz/orYv}{http://mng.bz/orYv}）。
+
+如果你对本书使用的 Qwen3 实现感兴趣，本附录列出了我所实现的 \texttt{Qwen3Model} 模型的源代码，我们从本书的 \texttt{reasoning\_from\_scratch} Python 包中导入该模型：
+
+\begin{codebox}
+from reasoning_from_scratch.qwen3 import Qwen3Model, Qwen3Tokenizer
+\end{codebox}
+
+如图 C.1 所示，Qwen3 的架构与 GPT-2 非常相似，我在\emph{《从零构建大语言模型》}一书中介绍过 GPT-2。阅读本书并不需要熟悉 GPT-2，但本附录仍为熟悉它的读者提供了与 GPT-2 的对比。事实上，我是把另一本书中的 GPT-2 模型逐块移植到 Qwen3 架构上，才写出 Qwen3 实现的，这样它能沿用相似的代码风格，也更易读。
+
+\myGraphic{0.92}{images/APPC_F01_Raschka2.png}{图 C.1 Qwen3 与 GPT-2 的架构对比。两个模型都通过嵌入层和堆叠的 transformer 块处理文本，但在某些设计选择上有所不同。}
+
+如图 C.1 所示，Qwen3（2025 年发布）与 GPT-2（2019 年发布）大体相似，两者都基于原始 Transformer 架构的解码器子模块。但自 2019 年以来，一些设计选择已经发生演变。请注意，Qwen3 中的大部分设计选择并非 Qwen3 独有，许多当代 LLM 都采用了它们，正如我在“The Big LLM Architecture Comparison”（\href{https://magazine.sebastianraschka.com/p/the-big-llm-architecture-comparison}{https://magazine.sebastianraschka.com/p/the-big-llm-architecture-comparison}）一文中讨论的那样。
+
+如果你是 LLM 新手，想了解这些架构是如何实现的，我建议从 GPT-2 入手。它的设计实现起来更简单，因此在探索更现代的变体之前，它是一个更容易的切入点。
+
+由于本书并不聚焦于架构实现，本附录余下的部分只对 Qwen3 的代码做简要概览。
+
+\section{RMSNorm}
+
+与使用标准 LayerNorm 的 GPT-2 不同，更新的 Qwen3 架构使用\emph{均方根层归一化}（root mean square layer normalization, RMSNorm）。这一趋势在现代模型架构中越来越普遍。
+
+RMSNorm 与 LayerNorm 发挥相同的核心作用：对层的激活值做归一化，以稳定并改善训练。但它通过去掉均值中心化步骤简化了计算，如图 C.2 所示。这意味着激活值仍会被归一化，但不再以 0 为中心。
+
+\myGraphic{0.92}{images/APPC_F02_Raschka2.png}{图 C.2 LayerNorm（用于 GPT-2）与 RMSNorm（用于 Qwen3）的对比。LayerNorm（右）对激活值做归一化，使其平均值（均值）恰好为 0、离散程度（方差）恰好为 1。RMSNorm（左）则根据均方根对激活值进行缩放，它不强制均值为 0 或方差为 1，但仍把均值和方差保持在合理范围内，以稳定训练。}
+
+如图 C.2 所示，LayerNorm 和 RMSNorm 都把层输出缩放到合理的范围。
+
+LayerNorm 减去均值再除以标准差，使层输出具有零均值和单位方差（方差为 1、标准差为 1），从而获得有利于稳定训练的梯度特性。
+
+RMSNorm 用输入除以均方根。这会把激活值缩放到可比的量级，但不强制零均值或单位方差。在图 C.2 所示的例子中，均值为 0.77，方差为 0.41。
+
+LayerNorm 和 RMSNorm 都能稳定激活值的尺度并改善优化，但在大规模 LLM 中往往更倾向于 RMSNorm，因为它的计算开销更低。与 LayerNorm 不同，RMSNorm 默认不使用偏置（位移）项，这减少了可训练参数的数量。此外，RMSNorm 把开销较大的均值和方差计算简化为一次均方根运算。这使跨特征的归约次数从两次减少为一次，从而降低 GPU 上的通信开销，并略微提升训练效率。
+
+下面的代码清单展示了 RMSNorm 在代码中的样子。
+
+\begin{codeboxt}{代码清单 C.1 RMSNorm}
+import torch.nn as nn
+
+class RMSNorm(nn.Module):
+
+    def __init__(
+        self,
+        emb_dim,
+        eps=1e-6,
+        bias=False,
+        qwen3_compatible=True,
+    ):
+        super().__init__()
+        self.eps = eps
+        self.qwen3_compatible = qwen3_compatible
+        self.scale = nn.Parameter(torch.ones(emb_dim))
+        self.shift = nn.Parameter(torch.zeros(emb_dim)) if bias else None
+
+    def forward(self, x):
+        input_dtype = x.dtype
+
+        if self.qwen3_compatible:
+            x = x.to(torch.float32)
+
+        variance = x.pow(2).mean(dim=-1, keepdim=True)
+        norm_x = x * torch.rsqrt(variance + self.eps)
+        norm_x = norm_x * self.scale
+
+        if self.shift is not None:
+            norm_x = norm_x + self.shift
+
+        return norm_x.to(input_dtype)
+\end{codeboxt}
+
+请注意，为简洁起见，本附录不会对每个 LLM 组件都给出详细的代码讲解。我们会在 C.6 节把所有组件整合到 \texttt{Qwen3Model} 类中，把预训练权重加载进去，然后在 C.9 节用这个模型生成文本。
+
+\section{前馈模块}
+
+\emph{前馈模块}（一个小型多层感知机）被替换为 2020 年论文“GLU Variants Improve Transformer”（\href{https://arxiv.org/abs/2002.05202}{https://arxiv.org/abs/2002.05202}）中提出的\emph{门控线性单元}（gated linear unit, GLU）变体。在这种设计中，标准的两个全连接层被替换为三个，如图 C.3 所示。
+
+\myGraphic{0.92}{images/APPC_F03_Raschka2.png}{图 C.3 在 GPT-2（上）中，前馈模块由两个全连接（线性）层构成，中间隔着一个非线性激活函数。在 Qwen3（下）中，该模块是门控线性单元（GLU）变体，它增加了第三个线性层（线性层 3），并把它的输出与线性层 1 的激活输出逐元素相乘。}
+
+如图 C.3 所示的 Qwen3 前馈模块，可以按下一条代码清单那样实现。
+
+\begin{codeboxt}{代码清单 C.2 Qwen3 的前馈模块}
+class FeedForward(nn.Module):
+    def __init__(self, cfg):
+        super().__init__()
+        self.fc1 = nn.Linear(
+            cfg["emb_dim"], cfg["hidden_dim"], dtype=cfg["dtype"],
+            bias=False
+        )
+        self.fc2 = nn.Linear(
+            cfg["emb_dim"], cfg["hidden_dim"], dtype=cfg["dtype"],
+            bias=False
+        )
+        self.fc3 = nn.Linear(
+            cfg["hidden_dim"], cfg["emb_dim"], dtype=cfg["dtype"],
+            bias=False
+        )
+
+    def forward(self, x):
+        x_fc1 = self.fc1(x)
+        x_fc2 = self.fc2(x)
+        x = nn.functional.silu(x_fc1) * x_fc2  #1
+        return self.fc3(x)
+\end{codeboxt}
+{\noindent\small\textit{\#1 这里的非线性激活函数是 SiLU 函数，稍后会讨论。}\par}
+
+乍看之下，Qwen3 所用的 GLU 前馈变体似乎应该比 GPT-2 中的标准前馈变体表现更好，仅仅因为它多了一个线性层（三个而不是两个），因而看起来参数更多。
+
+但这种直觉具有误导性。GLU 变体中的 \texttt{fc1} 和 \texttt{fc2} 层的宽度都只有标准前馈模块中 \texttt{fc1} 层的一半，所以 GLU 变体的参数反而更少。
+
+用一个具体例子来说明：假设图 C.3 中线性层 1 的输入维度是 1,024，对应代码清单 C.2 中的 \texttt{cfg[}\texttt{"}\texttt{emb\_dim}\texttt{"}\texttt{]}。\texttt{fc1} 的输出维度是 3,072（\texttt{cfg[}\texttt{"}\texttt{hidden\_dim}\texttt{"}\texttt{]}）。这些正是 Qwen3 0.6B 变体实际使用的数值。在这种情况下，代码清单 C.2 中 GLU 变体的参数量如下：
+
+\begin{itemize}
+\item \texttt{fc1}: 1024 × 3,072 = 3,145,728
+\item \texttt{fc2}: 1024 × 3,072 = 3,145,728
+\item \texttt{fc3}: 1024 × 3,072 = 3,145,728
+\item 总计：3 × 3,145,728 = 9,437,184 个参数
+\end{itemize}
+
+如果我们假设标准前馈模块中通常为 \texttt{fc1} 选取的宽度是该 GLU 变体中 \texttt{fc1} 宽度的两倍，那么标准前馈模块的参数量如下：
+
+\begin{itemize}
+\item \texttt{fc1}: 1024 × 2 × 3,072 = 6,291,456
+\item \texttt{fc2}: 1024 × 2 × 3,072 = 6,291,456
+\item 总计：2 × 6,291,456 = 12,582,912 个参数
+\end{itemize}
+
+虽然 GLU 变体的参数通常比常规前馈模块更少，但它的表现更好。这种改进来自门控机制引入的额外乘法交互 \texttt{activation(x\_fc1) * x\_fc2}，它提升了模型的表达能力。这类似于在训练得当的前提下，更深更瘦的网络可以胜过更浅更宽的网络。
+
+在进入下一节之前，还有一点需要说明。注意图 C.3 中的前馈模块包含一个标记为“Activation function”的元素，而在代码清单 C.2 中我们以 \texttt{nn.functional.silu} 激活函数作为具体例子。
+
+从历史上看，激活函数曾是激烈争论的热点，直到十多年前深度学习社区基本统一到\emph{修正线性单元}（rectified linear unit, ReLU）上。ReLU 简单且计算开销低，但它在零点处有一个尖锐的拐点。这促使研究者去探索更平滑的函数，例如\emph{高斯误差线性单元}（Gaussian error linear unit, GELU）和\emph{Sigmoid 线性单元}（sigmoid linear unit, SiLU），如图 C.4 所示。
+
+\myGraphic{0.92}{images/APPC_F04_Raschka2.png}{图 C.4 前馈模块（神经网络）中可以使用的不同激活函数。GELU 和 SiLU（Swish）提供了 ReLU 的平滑替代方案，而后者在输入为 0 处有一个尖锐的拐点。}
+
+GELU 涉及高斯累积分布函数（CDF）。计算这个 CDF 很慢，因为它使用分段逻辑和指数运算，这使得编写融合、优化的 GPU 核很困难；不过 tanh 近似使用的运算更廉价，运行更快，结果也几乎相同。简言之，虽然 GELU 能产生平滑的激活曲线，但总体计算开销比更简单的函数更高。
+
+较新的模型大多已用 SiLU（也称为 \emph{Swish}）函数取代 GELU，该函数会把较大的负输入平滑地抑制到接近 0，而对较大的正输入近似线性，如图 C.4 所示。
+
+SiLU 具有类似的平滑性，但计算上比 GELU 略便宜，建模性能也相当。在实践中，如今大多数架构都使用 SiLU，只有少数模型仍在使用 GELU，例如 Google 的 Gemma 开放权重 LLM。在代码清单 C.2 的前馈模块实现中，SiLU 函数通过 \texttt{nn.functional.silu} 调用。代码清单 C.2 中的前馈模块也常被称为 \emph{SwiGLU}，这个缩写来自 Swish 和 GLU 两个词。
+
+\section{旋转位置嵌入}
+
+在基于 transformer 的 LLM 中，由于注意力机制的存在，位置编码是必需的。默认情况下，注意力把输入词元视为没有顺序。在原始的 GPT 架构中，绝对位置嵌入通过为序列中的每个位置添加一个学习到的嵌入向量来解决这个问题，该向量随后被加到词元嵌入上。
+
+\emph{RoPE}（\emph{旋转位置嵌入}，rotary position embeddings 的缩写）采用不同的思路：它不把位置信息作为单独的嵌入相加，而是通过在注意力机制中旋转查询向量和键向量来编码位置信息，旋转方式取决于每个词元的位置（注意力机制将在下一节讨论）。RoPE 是一个优雅的想法，但它本身也是一个很大的话题。如果你感兴趣，可以在 RoPE 的原始论文“RoFormer: Enhanced Transformer with Rotary Position Embedding”中找到更多信息，网址是 \href{https://arxiv.org/abs/2104.09864}{https://arxiv.org/abs/2104.09864}。（RoPE 于 2021 年首次提出，随着 2023 年原始 Llama 模型的发布而被广泛采用。此后它已成为现代 LLM 的标配，因此并非 Qwen3 独有。）
+
+RoPE 可以用两种数学上等价的方式实现：交错形式，把相邻维度成对旋转；或两半形式，为方便起见把维度拆分成余弦和正弦两半。下一条代码清单实现的是两半变体，它读起来更容易。
+
+\begin{codeboxt}{代码清单 C.3 RoPE 函数}
+import torch
+
+def compute_rope_params(head_dim, theta_base=10_000, context_length=4096,
+                        dtype=torch.float32):
+    assert head_dim % 2 == 0, "Embedding dimension must be even"
+    inv_freq = 1.0 / (theta_base ** (
+        torch.arange(0, head_dim, 2, dtype=dtype)[: (head_dim // 2)].float()
+        / head_dim
+    ))
+    positions = torch.arange(context_length, dtype=dtype)
+    angles = positions[:, None] * inv_freq[None, :]
+    angles = torch.cat([angles, angles], dim=1)
+
+    cos = torch.cos(angles)
+    sin = torch.sin(angles)
+
+    return cos, sin
+
+def apply_rope(x, cos, sin, offset=0):
+    batch_size, num_heads, seq_len, head_dim = x.shape    #1
+    assert head_dim % 2 == 0, "Head dimension must be even"
+
+    x1 = x[..., : head_dim // 2]  # 前半部分    #2
+    x2 = x[..., head_dim // 2:]  # 后半部分     #2
+
+    cos = cos[offset:offset + seq_len, :].unsqueeze(0).unsqueeze(0)
+    sin = sin[offset:offset + seq_len, :].unsqueeze(0).unsqueeze(0)
+    # 之后形状：(1, 1, seq_len, head_dim)
+
+    rotated = torch.cat((-x2, x1), dim=-1)
+    x_rotated = (x * cos) + (rotated * sin)
+
+    return x_rotated.to(dtype=x.dtype)    #3
+\end{codeboxt}
+{\noindent\small\textit{\#1 形状为 (batch\_size, num\_heads, seq\_len, head\_dim)。 \newline \#2 把 x 拆分为前半部分和后半部分。 \newline \#3 在应用 cos 和 sin 旋转之后，使用较低精度是可以的。}\par}
+
+代码清单 C.3 中的 RoPE 代码将用于 C.4 节讨论的分组查询注意力机制。
+
+\begin{mySidebar}{RoPE 的实现变体}
+
+如果你熟悉 RoPE 原始论文（\href{https://arxiv.org/abs/2104.09864}{https://arxiv.org/abs/2104.09864}），可能会好奇我为什么会选择这种实现方式。RoPE 有两种常见的实现风格，它们在数学上等价。这些实现主要区别在于旋转矩阵如何配对维度。我选择了拆半风格，因为它读起来和实现起来都更容易一些。
+
+\begin{codebox}
+1) Split-halves style (this book, Hugging Face Transformers):
+      [ x0   x1   x2   x3   x4   x5   x6   x7 ]
+        │    │    │    │    │    │    │    │
+        ▼    ▼    ▼    ▼    ▼    ▼    ▼    ▼
+       cos  cos  cos  cos  sin  sin  sin  sin
+\end{codebox}
+
+旋转矩阵如下：
+
+\begin{codebox}
+      [ costheta   -sintheta    0      0   ... ]
+      [ sintheta    costheta    0      0   ... ]
+      [  0       0    costheta   -sintheta ... ]
+      [  0       0    sintheta    costheta ... ]
+\end{codebox}
+
+这里，嵌入维度被拆分成两半，每一半按块进行旋转。
+
+原始论文（以及 Llama 官方代码仓库）中采用的交错（奇偶）RoPE 风格是这样的：
+
+\begin{codebox}
+      [ x0   x1   x2   x3   x4   x5   x6   x7 ]
+        │    │    │    │    │    │    │    │
+        ▼    ▼    ▼    ▼    ▼    ▼    ▼    ▼
+       cos  sin  cos  sin  cos  sin  cos  sin
+\end{codebox}
+
+旋转矩阵如下：
+
+\begin{codebox}
+      [ costheta  -sintheta    0      0   ... ]
+      [ sintheta   costheta    0      0   ... ]
+      [  0      0    costheta   -sintheta ... ]
+      [  0      0    sintheta    costheta ... ]
+\end{codebox}
+
+这里，嵌入维度按奇/偶余弦/正弦对交错排列。
+
+两种布局编码的相对位置相同，唯一的差别在于维度如何配对。
+
+\end{mySidebar}
+
+\section{分组查询注意力}
+
+\emph{分组查询注意力}（\emph{GQA}）已成为原始多头注意力（multi-head attention, MHA）机制的标准替代方案，在计算和参数效率上都更高。与每个头都有自己的一组键和值的 MHA 不同，GQA 通过把多个头分组以共享相同的键和值投影来降低内存占用，如图 C.5 所示。
+
+\myGraphic{0.92}{images/APPC_F05_Raschka2.png}{图 C.5 MHA 与 GQA 的对比。这里的组大小为 2，意味着一个键值对由 2 个查询共享。}
+
+GQA 的核心思想是通过让多个查询头共享键和值头来减少键头与值头的数量。这既降低了模型的参数量，也减少了推理过程中键和值张量占用的内存带宽，因为需要存入 KV 缓存（KV cache，在 C.7 节讨论）并从中取回的键和值更少了。
+
+尽管 GQA 主要是针对 MHA 的一种计算效率变通方案，但 GQA 原始论文“GQA: Training Generalized Multi-Query Transformer Models from Multi-Head Checkpoints”（\href{https://arxiv.org/abs/2305.13245}{https://arxiv.org/abs/2305.13245}）中给出的消融研究表明，它在 LLM 的建模性能上与标准 MHA 相当。
+
+下一条代码清单实现了支持 KV 缓存的 GQA 机制。
+
+\begin{codeboxt}{代码清单 C.4 分组查询注意力}
+class GroupedQueryAttention(nn.Module):
+    def __init__(self, d_in, num_heads, num_kv_groups, head_dim=None,
+                 qk_norm=False, dtype=None):
+        super().__init__()
+        assert num_heads % num_kv_groups == 0
+
+        self.num_heads = num_heads
+        self.num_kv_groups = num_kv_groups
+        self.group_size = num_heads // num_kv_groups
+
+        if head_dim is None:
+            assert d_in % num_heads == 0
+            head_dim = d_in // num_heads
+
+        self.head_dim = head_dim
+        self.d_out = num_heads * head_dim
+
+        self.W_query = nn.Linear(
+            d_in, self.d_out, bias=False, dtype=dtype
+        )
+        self.W_key = nn.Linear(
+            d_in, num_kv_groups * head_dim, bias=False,dtype=dtype
+        )
+        self.W_value = nn.Linear(
+            d_in, num_kv_groups * head_dim, bias=False, dtype=dtype
+        )
+
+        self.out_proj = nn.Linear(self.d_out, d_in, bias=False, dtype=dtype)
+
+        if qk_norm:
+            self.q_norm = RMSNorm(head_dim, eps=1e-6)
+            self.k_norm = RMSNorm(head_dim, eps=1e-6)
+        else:
+            self.q_norm = self.k_norm = None
+
+    def forward(self, x, mask, cos, sin, start_pos=0, cache=None):
+        b, num_tokens, _ = x.shape
+
+        queries = self.W_query(x)            #1
+        keys = self.W_key(x)                 #2
+        values = self.W_value(x)              #2
+
+        queries = queries.view(b, num_tokens, self.num_heads,
+                               self.head_dim).transpose(1, 2)
+        keys_new = keys.view(b, num_tokens, self.num_kv_groups,
+                             self.head_dim).transpose(1, 2)
+        values_new = values.view(b, num_tokens, self.num_kv_groups,
+                                 self.head_dim).transpose(1, 2)
+
+        if self.q_norm:
+            queries = self.q_norm(queries)
+        if self.k_norm:
+            keys_new = self.k_norm(keys_new)
+
+        queries = apply_rope(queries, cos, sin, offset=start_pos)
+        keys_new = apply_rope(keys_new, cos, sin, offset=start_pos)
+
+        if cache is not None:
+            prev_k, prev_v = cache
+            keys = torch.cat([prev_k, keys_new], dim=2)
+            values = torch.cat([prev_v, values_new], dim=2)
+        else:
+            start_pos = 0                    #3
+            keys, values = keys_new, values_new
+        next_cache = (keys, values)
+
+        keys = keys.repeat_interleave(       #4
+            self.group_size, dim=1            #4
+        )                                     #4
+        values = values.repeat_interleave(    #4
+            self.group_size, dim=1            #4
+        )                                     #4
+ #4
+        attn_scores = queries @ keys.transpose(2, 3)
+        attn_scores = attn_scores.masked_fill(mask, -torch.inf)
+        attn_weights = torch.softmax(
+            attn_scores / self.head_dim**0.5, dim=-1
+        )
+
+        context = (attn_weights @ values).transpose(1, 2)
+        context = context.reshape(b, num_tokens, self.d_out)
+        return self.out_proj(context), next_cache
+\end{codeboxt}
+{\noindent\small\textit{\#1 形状为 (b, num\_tokens, num\_heads * head\_dim)。 \newline \#2 形状为 (b, num\_tokens, num\_kv\_groups * head\_dim)。 \newline \#3 重置 RoPE。 \newline \#4 扩展 K 和 V 以匹配头的数量。}\par}
+
+你可能注意到，代码清单 C.4 中的 GQA 机制还包含一个不属于标准 GQA 设计的 \texttt{qk\_norm} 参数。当 \texttt{qk\_norm=True} 时，模型在计算注意力分数之前分别对查询向量和键向量应用 RMSNorm。这种变体通常被称为 QKNorm，因为它对查询（Q）和键（K）表示做归一化。换句话说，QKNorm 使用 C.1 节介绍的同一 RMSNorm 操作，但把它应用在注意力机制内部，而不是作为 transformer 块外部的通用归一化层。在 Qwen3 中，这种查询/键归一化被使用（在常规 RMSNorm 层之外额外使用），以帮助在训练期间稳定注意力分数。
+
+\section{Transformer 块}
+
+\emph{transformer 块}是 LLM 的核心组件，它把本附录到目前为止介绍的所有单个元素组合在一起。如图 C.6 所示，它会被重复多次；在 Qwen3 的 0.6B 参数版本中，它出现了 28 次。
+
+\myGraphic{0.92}{images/APPC_F06_Raschka2.png}{图 C.6 Qwen3 中 transformer 块的结构。每个块包含 RMSNorm、RoPE、带掩码的分组查询注意力以及前馈模块，在 0.6B 参数模型中该块被重复 28 次。}
+
+代码清单 C.5 实现了图 C.6 所示的 transformer 块。
+
+\begin{codeboxt}{代码清单 C.5 Transformer 块}
+class TransformerBlock(nn.Module):
+    def __init__(self, cfg):
+        super().__init__()
+        self.att = GroupedQueryAttention(
+            d_in=cfg["emb_dim"],
+            num_heads=cfg["n_heads"],
+            head_dim=cfg["head_dim"],
+            num_kv_groups=cfg["n_kv_groups"],
+            qk_norm=cfg["qk_norm"],
+            dtype=cfg["dtype"]
+        )
+        self.ff = FeedForward(cfg)
+        self.norm1 = RMSNorm(cfg["emb_dim"], eps=1e-6)
+        self.norm2 = RMSNorm(cfg["emb_dim"], eps=1e-6)
+
+    def forward(self, x, mask, cos, sin, start_pos=0, cache=None):
+        shortcut = x
+        x = self.norm1(x)
+        x, next_cache = self.att(
+            x, mask, cos, sin, start_pos=start_pos,cache=cache
+        )  #1
+        x = x + shortcut
+
+        shortcut = x
+        x = self.norm2(x)
+        x = self.ff(x)
+        x = x + shortcut
+
+        return x, next_cache
+\end{codeboxt}
+{\noindent\small\textit{\#1 形状为 (batch\_size, num\_tokens, emb\_size)。}\par}
+
+如该代码清单所示，transformer 块只是把我们在前几节实现的各个元素连接起来。
+
+\section{主模型代码}
+
+本节我们将定义第 2 章导入并使用的 \texttt{Qwen3Model} 类。
+
+为实现 \texttt{Qwen3Model} 类，下面的代码清单遵循图 C.6 所示的架构，其中 transformer 块处于 LLM 的核心位置。
+
+\begin{codeboxt}{代码清单 C.6 Qwen3Model 主体代码}
+class Qwen3Model(nn.Module):
+    def __init__(self, cfg):
+        super().__init__()
+
+        # 主模型参数
+        self.tok_emb = nn.Embedding(cfg["vocab_size"], cfg["emb_dim"],
+                                    dtype=cfg["dtype"])
+
+        self.trf_blocks = nn.ModuleList(
+            [TransformerBlock(cfg) for _ in range(cfg["n_layers"])]
+        )
+        self.final_norm = RMSNorm(cfg["emb_dim"])
+        self.out_head = nn.Linear(
+            cfg["emb_dim"], cfg["vocab_size"],
+            bias=False, dtype=cfg["dtype"]
+        )
+
+        # 可复用的工具
+        if cfg["head_dim"] is None:
+            head_dim = cfg["emb_dim"] // cfg["n_heads"]
+        else:
+            head_dim = cfg["head_dim"]
+        cos, sin = compute_rope_params(
+            head_dim=head_dim,
+            theta_base=cfg["rope_base"],
+            context_length=cfg["context_length"]
+        )
+        self.register_buffer("cos", cos, persistent=False)
+        self.register_buffer("sin", sin, persistent=False)
+        self.cfg = cfg
+        self.current_pos = 0  # 跟踪 KV 缓存中的当前位置
+
+    def forward(self, in_idx, cache=None):
+        tok_embeds = self.tok_emb(in_idx)
+        x = tok_embeds
+
+        num_tokens = x.shape[1]
+        if cache is not None:
+            pos_start = self.current_pos
+            pos_end = pos_start + num_tokens
+            self.current_pos = pos_end
+            mask = torch.triu(
+                torch.ones(
+                    pos_end, pos_end, device=x.device, dtype=torch.bool
+                ),
+                diagonal=1
+            )[pos_start:pos_end, :pos_end]
+        else:
+            pos_start = 0  # 并非严格必需，但有助于 torch.compile
+            mask = torch.triu(
+                torch.ones(num_tokens, num_tokens, device=x.device,
+                           dtype=torch.bool),
+                diagonal=1
+            )
+
+        mask = mask[None, None, :, :]                 #1
+
+        for i, block in enumerate(self.trf_blocks):
+            blk_cache = cache.get(i) if cache else None
+            x, new_blk_cache = block(x, mask, self.cos, self.sin,
+                                     start_pos=pos_start,
+                                     cache=blk_cache)
+            if cache is not None:
+                cache.update(i, new_blk_cache)
+
+        x = self.final_norm(x)
+        logits = self.out_head(x.to(self.cfg["dtype"]))
+        return logits
+
+    def reset_kv_cache(self):
+        self.current_pos = 0
+\end{codeboxt}
+{\noindent\small\textit{\#1 预填充：形状为 (1, 1, T, T)，用于在批次维和注意力头维上广播。使用缓存时：形状为 (1, 1, T, K+T)，其中 T=新词元，K=已缓存的键。}\par}
+
+我们已经具备所有主要构件，因此代码清单 C.6 中的 \texttt{Qwen3Model} 类只是围绕 transformer 块又添加了几个组件，即嵌入层和输出层，以及额外的一个 RMSNorm 层。由于有 KV 缓存选项，这段代码看起来可能仍有些复杂。
+
+如第 2 章所述，KV 缓存可以加速文本生成过程，但它超出了本书的范围。如果你感兴趣，可以在我的文章“Understanding and Coding the KV Cache in LLMs from Scratch”（\href{https://magazine.sebastianraschka.com/p/coding-the-kv-cache-in-llms}{https://magazine.sebastianraschka.com/p/coding-the-kv-cache-in-llms}）中了解更多关于 KV 缓存的内容。
+
+请注意，如代码清单 C.6 所实现的 \texttt{Qwen3Model} 类支持多种模型规模（在附录 D 中讨论）。在第 2 章中，我们使用 0.6B 参数模型，因为它是 Qwen3 模型家族中资源需求最低的模型。该模型的配置如图 C.7 所示。
+
+\myGraphic{0.92}{images/APPC_F07_Raschka2.png}{图 C.7 Qwen3 0.6B 模型的架构。该模型由词元嵌入层和随后的 28 个 transformer 块组成，每个块包含 RMSNorm、RoPE、QKNorm、含 16 个头的带掩码分组查询注意力，以及一个中间维度为 3,072 的前馈模块。}
+
+要通过 \texttt{Qwen3Model} 类使用图 C.7 所示的 0.6B 模型，我们可以定义如下配置，并在实例化新的 \texttt{Qwen3Model} 实例时把它作为输入传入（\texttt{cfg=QWEN\_CONFIG\_06\_B}）。
+
+\begin{codeboxt}{代码清单 C.7 Qwen3 0.6B 配置}
+QWEN_CONFIG_06_B = {
+    "vocab_size": 151_936,     # 词表大小
+    "context_length": 40_960,  # 训练时最初使用的长度
+    "emb_dim": 1024,           # 嵌入维度
+    "n_heads": 16,             # 注意力头数量
+    "n_layers": 28,            # 层数
+    "hidden_dim": 3072,        # FeedForward 中中间维度的尺寸
+    "head_dim": 128,           # GQA 中头的尺寸
+    "qk_norm": True,           # 是否在 GQA 中对查询和键做归一化
+    "n_kv_groups": 8,          # GQA 的键值分组数
+    "rope_base": 1_000_000.0,  # RoPE 中 "theta" 的基数
+    "dtype": torch.bfloat16,   # 使用较低精度的数据类型以减少内存占用
+}
+\end{codeboxt}
+
+我们将在 C.9 节使用代码清单 C.7 中的 \texttt{QWEN\_CONFIG\_06\_B} 配置来实例化 Qwen3 0.6B 模型。
+
+\begin{mySidebar}{更精确的上下文长度信息}
+
+对于 Qwen3 0.6B，默认支持的最大上下文长度是 40,960 个词元，但模型本身只用了 32,768 个词元进行训练。这 40,960 个词元的额度中，为模型输出（生成的文本）保留 32,768 个词元，为典型提示（用户的问题或指令）保留 8,192 个词元。作为参照，40,000 个词元大约相当于《哈利·波特》第一册的一半。
+
+由于这一长度对大多数推理任务都已足够，开发者指出，除非平均上下文经常超过 32,000 个词元，否则不建议使用上下文扩展方法（例如 Yarn），因为在较短的上下文中启用它们可能会略微降低性能。
+
+\end{mySidebar}
+
+\section{KV 缓存}
+
+与 KV 缓存相关的重活大多在 \texttt{Qwen3Model}（代码清单 C.6）和 \texttt{GroupedQueryAttention}（代码清单 C.4）的代码中完成。下一条代码清单中所示的 \texttt{KVCache} 在文本生成期间存储键值对，从而带来我们在第 2 章启用 KV 缓存时所体验到的加速。
+
+\begin{codeboxt}{代码清单 C.8 KV 缓存}
+class KVCache:
+    def __init__(self, n_layers):
+        self.cache = [None] * n_layers
+
+    def get(self, layer_idx):
+        return self.cache[layer_idx]
+
+    def update(self, layer_idx, value):
+        self.cache[layer_idx] = value
+
+    def get_all(self):
+        return self.cache
+
+    def reset(self):
+        for i in range(len(self.cache)):
+            self.cache[i] = None
+\end{codeboxt}
+
+这个 \texttt{KVCache} 类用在我们在第 2 章实现的 \texttt{generate\_text\_basic\_stream\_cache} 函数中。
+
+\section{分词器}
+
+\emph{分词器}的代码有些复杂，因为它除了支持基础模型以及 Qwen3 中所谓“thinking”的模型变体（它是一种推理模型）之外，还支持多种特殊词元。完整重新实现的分词器如下所示。
+
+\begin{codeboxt}{代码清单 C.9 分词器}
+import re
+from tokenizers import Tokenizer
+
+class Qwen3Tokenizer:
+    _SPECIALS = [
+        "<|endoftext|>",
+        "<|im_start|>", "<|im_end|>",
+        "<|object_ref_start|>", "<|object_ref_end|>",
+        "<|box_start|>", "<|box_end|>",
+        "<|quad_start|>", "<|quad_end|>",
+        "<|vision_start|>", "<|vision_end|>",
+        "<|vision_pad|>", "<|image_pad|>", "<|video_pad|>",
+    ]
+    _SPLIT_RE = re.compile(r"(<\|[^>]+?\|>)")
+
+    def __init__(self,
+                 tokenizer_file_path="tokenizer-base.json",
+                 apply_chat_template=False,
+                 add_generation_prompt=False,
+                 add_thinking=False):
+
+        self.apply_chat_template = apply_chat_template
+        self.add_generation_prompt = add_generation_prompt
+        self.add_thinking = add_thinking
+
+        tok_path = Path(tokenizer_file_path)
+        if not tok_path.is_file():
+            raise FileNotFoundError(
+                f"Tokenizer file '{tok_path}' not found. "
+            )
+
+        self._tok = Tokenizer.from_file(str(tok_path))
+        self._special_to_id = {t: self._tok.token_to_id(t)
+                               for t in self._SPECIALS}
+
+        self.pad_token = "<|endoftext|>"
+        self.pad_token_id = self._special_to_id.get(self.pad_token)
+
+        f = tok_path.name.lower()                      #1
+        if "base" in f and "reasoning" not in f:        #1
+            self.eos_token = "<|endoftext|>"            #1
+        else:                                           #1
+            self.eos_token = "<|im_end|>"               #1
+        self.eos_token_id = self._special_to_id.get(self.eos_token)
+
+    def encode(self, prompt, chat_wrapped=None):
+        if chat_wrapped is None:
+            chat_wrapped = self.apply_chat_template
+
+        stripped = prompt.strip()
+        if stripped in self._special_to_id and "\n" not in stripped:
+            return [self._special_to_id[stripped]]
+
+        if chat_wrapped:
+            prompt = self._wrap_chat(prompt)
+
+        ids = []
+        for part in filter(None, self._SPLIT_RE.split(prompt)):
+            if part in self._special_to_id:
+                ids.append(self._special_to_id[part])
+            else:
+                ids.extend(self._tok.encode(part).ids)
+        return ids
+
+    def decode(self, token_ids):
+        return self._tok.decode(token_ids, skip_special_tokens=False)
+
+    def _wrap_chat(self, user_msg):
+        s = f"<|im_start|>user\n{user_msg}<|im_end|>\n"
+        if self.add_generation_prompt:
+            s += "<|im_start|>assistant"
+            if self.add_thinking:
+                s += "\n"          #2
+            else:
+                s += "\n<think>\n\n</think>\n\n"
+        return s
+\end{codeboxt}
+{\noindent\small\textit{\#1 与 HF 的行为保持一致：聊天模型为 \textless{}|im\_end|\textgreater{}，基础模型为 \textless{}|endoftext|\textgreater{}。 \newline \#2 不插入 \textless{}think\textgreater{} 标签，只插入一个换行。}\par}
+
+我在代码清单 C.9 中重新实现的 \texttt{Qwen3Tokenizer} 可能看起来有些复杂，因为它力求复现 Qwen3 团队在 Hugging Face Transformers 库中发布的官方分词器的行为。
+
+乍看之下，它似乎有几个古怪之处。例如，当 \texttt{add\_thinking=True} 时，不会插入 \texttt{"}\texttt{\textbackslash\{\}n\textless{}think\textgreater{}\textbackslash\{\}n\textbackslash\{\}n\textless{}/think\textgreater{}\textbackslash\{\}n\textbackslash\{\}n}\texttt{"} 这些词元（其中 \texttt{\textbackslash\{\}n }是换行符），但当 \texttt{add\_thinking=False} 时，这些词元反而会被添加。这是有意为之的，因为非 base 的 Qwen3 0.6B 模型是一个混合模型，同时支持推理（“thinking”）模式和标准模式。
+
+\section{使用模型}
+
+现在我们实例化并使用该模型，通过复用第 2 章的文本生成方法来确认代码可以正常工作。
+
+首先，我们用预训练模型权重实例化模型：
+
+\begin{codebox}
+from pathlib import Path
+import torch
+
+from reasoning_from_scratch.ch02 import get_device
+from reasoning_from_scratch.qwen3 import download_qwen3_small
+
+# device = get_device()         #1
+device = torch.device("cpu")
+
+download_qwen3_small(kind="base", tokenizer_only=False, out_dir="qwen3")
+
+tokenizer_file_path = Path("qwen3") / "tokenizer-base.json"
+model_file = Path("qwen3") / "qwen3-0.6B-base.pth"
+
+tokenizer = Qwen3Tokenizer(tokenizer_file_path=tokenizer_file_path)
+model = Qwen3Model(QWEN_CONFIG_06_B)
+model.load_state_dict(torch.load(model_file))
+
+model.to(device)
+\end{codebox}
+{\noindent\small\textit{\#1 可选：取消注释以使用自动设备选择器。}\par}
+
+下面的输出会打印实例化后的模型架构。特别地，它显示该模型对象是使用代码清单 C.7 中指定的相同设置创建的，例如层数、注意力头数、键值头数、嵌入大小和前馈维度：
+
+\begin{codebox}
+✓ qwen3/qwen3-0.6B-base.pth already up-to-date
+✓ qwen3/tokenizer-base.json already up-to-date
+Qwen3Model(
+  (tok_emb): Embedding(151936, 1024)
+  (trf_blocks): ModuleList(
+    (0-27): 28 x TransformerBlock(
+      (att): GroupedQueryAttention(
+        (W_query): Linear(in_features=1024, out_features=2048, bias=False)
+        (W_key): Linear(in_features=1024, out_features=1024, bias=False)
+        (W_value): Linear(in_features=1024, out_features=1024, bias=False)
+        (out_proj): Linear(in_features=2048, out_features=1024, bias=False)
+        (q_norm): RMSNorm()
+        (k_norm): RMSNorm()
+      )
+      (ff): FeedForward(
+        (fc1): Linear(in_features=1024, out_features=3072, bias=False)
+        (fc2): Linear(in_features=1024, out_features=3072, bias=False)
+        (fc3): Linear(in_features=3072, out_features=1024, bias=False)
+      )
+      (norm1): RMSNorm()
+      (norm2): RMSNorm()
+    )
+  )
+  (final_norm): RMSNorm()
+  (out_head): Linear(in_features=1024, out_features=151936, bias=False)
+)
+\end{codebox}
+
+接下来，我们复用第 2 章的文本生成函数来生成文本：
+
+\begin{codebox}
+import time
+
+from reasoning_from_scratch.ch02 import (
+   generate_text_basic_stream_cache,
+   generate_stats
+)
+
+prompt = "Explain large language models in a single sentence."
+input_token_ids_tensor = torch.tensor(
+    tokenizer.encode(prompt),
+    device=device
+    ).unsqueeze(0)
+max_new_tokens = 200
+
+start_time = time.time()
+generated_ids = []
+
+for token in generate_text_basic_stream_cache(
+    model=model,
+    token_ids=input_token_ids_tensor,
+    max_new_tokens=max_new_tokens,
+    eos_token_id=tokenizer.eos_token_id
+):
+    token_id = token.squeeze(0).tolist()
+    print(
+        tokenizer.decode(token_id),
+        end="",
+        flush=True
+    )
+
+    next_token_id = token.squeeze(0)
+    generated_ids.append(next_token_id)  # 收集生成的词元
+
+end_time = time.time()
+
+output_token_ids_tensor = torch.cat(generated_ids, dim=0)
+generate_stats(output_token_ids_tensor, tokenizer, start_time, end_time)
+\end{codebox}
+
+由于前面的代码使用了与第 2 章相同的提示，生成的文本与第 2 章中的文本完全一致：
+
+\begin{codebox}
+Time: 1.46 sec
+28 tokens/sec
+
+ Large language models are artificial intelligence systems that can
+understand, generate, and process human language, enabling them to
+perform a wide range of tasks, from answering questions to writing
+articles, and even creating creative content.
+\end{codebox}
+
+虽然我们在各章讨论中使用 Qwen3 的 0.6B 参数变体以降低本书的资源需求，但关于使用更大模型的信息可以在附录 D 中找到。

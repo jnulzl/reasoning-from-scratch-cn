@@ -1,0 +1,325 @@
+在本书各章实现的代码中，我们通常一次处理一个提示（prompt）或一个样本。这让代码更紧凑、更易懂，也有助于把资源需求控制在更可控的范围内。本书的代码运行成本本就很高，因此在所有地方都加入批处理支持，往往会增加复杂度，却未必带来多少实际收益——这取决于你手头可用的硬件。
+
+话虽如此，如果你能使用显存充足的较新 GPU，那么如图 E.1 所示的批处理执行会非常有用。例如，当我们需要评估大量问题、为每个提示采样多个回复，或一次性在多个样本上训练时，批处理有助于提高吞吐量（throughput）并缩短总耗时。
+
+\myGraphic{0.92}{images/APPE_F01_Raschka2.png}{图 E.1 单样本生成与批生成对比概览。在批生成中，多个提示被打包进一个批次，并行处理，然后一起解码，以提升吞吐量。}
+
+本附录讲解批处理背后的总体思路，并展示如何使用配套资料中为各章提供的批处理实现。
+
+\section{批处理为何有用}
+
+在讨论计算性能时，把以下总体目标区分开来会很有帮助：
+
+\begin{itemize}
+\item 延迟（latency）：得到一个提示的答案有多快
+\item 吞吐量：在固定时间内能处理多少个提示
+\end{itemize}
+
+单样本生成通常最适合用来理解某个概念的概念性实现、最小化延迟以及调试。批处理可以看作单样本生成的扩展，主要面向吞吐量。例如，如果我们要在 MATH-500 上评估数百道题、生成多个自洽性（self-consistency）样本，或在更大的蒸馏数据集上训练，那么在合适的硬件上，批处理可以大幅缩短总运行时间。
+
+但批处理并非在每台设备上都能自动变快。在 CPU 或优化较差的 GPU 上运行的小模型可能收益很小，甚至毫无收益，因为批处理会引入额外的代码复杂度，包括填充（padding）和其他开销，这些都可能抵消并行批处理带来的收益。
+
+最好把批处理理解为一种吞吐量优化，而不是一种普适的加速手段。
+
+\section{运行批生成}
+
+批处理的主要技术障碍在于，提示的长度通常各不相同。一道数学题分词后可能是 40 个词元（token），另一道题可能是 120 个词元，但 PyTorch 张量（tensor）必须保持矩形。因此，如果我们想把多个提示一起运行，就需要一种方法来填充较短的行，并记录哪些位置是真实的词元、哪些只是填充词元。
+
+填充词元是添加到提示中、使其达到特定长度的占位词元。例如，要把一个包含三个词元的提示 \texttt{"}\texttt{3 + 3}\texttt{"} 扩展为包含五个词元的提示，我们可以在右侧或左侧添加两个额外的填充词元：\texttt{"}\texttt{\textless{}pad\textgreater{}\textless{}pad\textgreater{} 3 + 3}\texttt{"}。（实践中，用哪个词元作为填充词元并不重要；通常使用序列结束词元，如 \texttt{\textless{}eos\textgreater{}} 或 \texttt{\textless{}|endoftext|\textgreater{}}。）
+
+从概念上讲，填充以及跟踪被填充的位置，使批生成比单提示生成更复杂。在本书中，我们使用的是 \texttt{reasoning\_from\_scratch.qwen3} 中的 \texttt{Qwen3Model} 类，它是附录 C 中讲解的普通单样本实现。
+
+因此，为支持批生成，本书的配套资料在 \texttt{reasoning\_from\_scratch.qwen3\_batched} 中提供了一个单独的 \texttt{Qwen3Model} 类。它可以作为直接替换使用，并加入了批处理中感知填充（padding-aware）执行所需的簿记逻辑。
+
+我们来看一个单序列示例，它与本书前面用过的代码非常相似。在下面的代码清单中，我们把它应用到两个很小的提示上，但仍然是逐个运行。
+
+\begin{codeboxt}{代码清单 E.1 单样本生成}
+import torch
+
+from reasoning_from_scratch.ch02 import (
+    get_device,
+    generate_text_basic_stream_cache,
+)
+from reasoning_from_scratch.ch03 import (
+    load_model_and_tokenizer,
+    render_prompt,
+)
+
+device = get_device()
+model, tokenizer = load_model_and_tokenizer(
+    which_model="base",
+    device=device,
+    use_compile=False,
+)
+
+for problem in ["2+2?", "3+3=6?"]:  #1
+    prompt = render_prompt(problem)
+    input_ids = torch.tensor(
+        tokenizer.encode(prompt),
+        dtype=torch.long,
+        device=device,
+    ).unsqueeze(0)
+
+    for token in generate_text_basic_stream_cache(
+        model=model,
+        token_ids=input_ids,
+        max_new_tokens=32,
+        eos_token_id=tokenizer.eos_token_id,
+    ):
+        next_token_id = token.squeeze(0)
+        print(tokenizer.decode(next_token_id.tolist()), end="", flush=True)
+
+    print()  #2
+\end{codeboxt}
+{\noindent\small\textit{\#1 我们顺序处理的两个提示 \newline \#2 在每个答案后强制换行。}\par}
+
+以下是生成的输出：
+
+\begin{codebox}
+ \boxed{4}
+ \boxed{6}
+\end{codebox}
+
+代码清单 E.1 中的代码仍是普通的单样本生成。我们渲染提示、对其进行分词、添加大小为 1 的批次维度，然后以流式方式在词元生成时逐个输出。这种做法在概念上很简单，这也是我们在本书中采用这种风格的原因。
+
+代码清单 E.2 展示了对应的批处理版本。整体流程类似，但现在我们改用 \texttt{reasoning\_from\_scratch.qwen3\_batched}，事先对两个提示分词、将它们左填充到相同长度，然后一起生成。
+
+\begin{codeboxt}{代码清单 E.2 批生成}
+from reasoning_from_scratch.qwen3_batched import (
+    generate_text_basic_batched_cache,
+    load_model_and_tokenizer,
+)
+
+model, tokenizer = load_model_and_tokenizer(
+    which_model="base",
+    device=device,
+    use_compile=False,
+)
+
+problems = ["2+2?", "3+3=6?"]
+prompts = [render_prompt(problem) for problem in problems]
+tokenized = [tokenizer.encode(p) for p in prompts]
+pad_id = tokenizer.pad_token_id
+max_len = max(len(t) for t in tokenized)
+
+left_padded = [  #1
+    [pad_id] * (max_len - len(t)) + t
+    for t in tokenized
+]
+input_ids = torch.tensor(left_padded, dtype=torch.long, device=device)
+
+generated = generate_text_basic_batched_cache(
+    model=model,
+    token_ids=input_ids,
+    max_new_tokens=32,
+    eos_token_id=tokenizer.eos_token_id,
+    pad_id=pad_id,  #2
+)
+
+for row in generated:
+    eos_pos = (row == tokenizer.eos_token_id).nonzero(as_tuple=True)[0]
+    if len(eos_pos) > 0:
+        row = row[:eos_pos[0]]
+    print(tokenizer.decode(row.tolist()))
+\end{codeboxt}
+{\noindent\small\textit{\#1 对较短的序列进行左填充，使批次中所有提示长度一致。 \newline \#2 用于让生成能够区分真实词元与填充}\par}
+
+结果与之前相同，但这一次是并行生成的：
+
+\begin{codebox}
+ \boxed{4}
+ \boxed{6}
+\end{codebox}
+
+在这个示例中，我们使用的是非流式的批处理辅助函数，因此需要等到整批处理完成后再解码并打印结果。这样能让示例保持简单，也便于我们在深入内部掩码（masking）逻辑之前看清填充所起的作用。
+
+文本生成函数还有一个更优化的版本 \texttt{generate\_text\_basic\_batched\_cache\_stop}，它会把已完成的行从活跃的计算批次中移除，而不是一直带着它们直到最长的行生成完毕。相比之下，代码清单 E.2 中使用的 \texttt{generate\_text\_basic\_batched\_cache} 会在每个解码步中把所有行都保留在活跃批次里。
+
+在 \texttt{generate\_text\_basic\_batched\_cache} 中，一旦某一行输出了 EOS，该实现就会强制这一行继续产生 EOS，以保持批次形状对齐，尽管从最终解码输出的角度看这一行已经完成。这两个函数的区别如图 E.2 所示。请注意，Qwen3 为基座模型使用 \texttt{\textless{}|endoftext|\textgreater{}} 作为 EOS 词元，但图 E.2 为了视觉上的简洁，直接把它标注为 \texttt{\textless{}eos\textgreater{}}。
+
+\myGraphic{0.92}{images/APPE_F02_Raschka2.png}{图 E.2 顺序生成（1）与常规批生成（2）以及提前停止的批生成（3）对比。常规批处理辅助函数（2）把已完成的行作为占位的 EOS 行保留在批次中，而 \texttt{\_stop} 变体（3）会在这些行输出 EOS 后立刻将其从活跃的计算批次中移除。}
+
+下一节会更详细地介绍填充在内部是如何处理的。
+
+\section{填充与注意力掩码}
+
+在单样本模式下，如果我们对诸如 \texttt{"}\texttt{2+2?}\texttt{"} 这样的短提示进行分词，就可以把它作为形状为 \texttt{(1, 4)} 的简单张量传给模型：
+
+\begin{codebox}
+input_ids = torch.tensor([[17, 10, 17, 30]])
+\end{codebox}
+
+在内部，模型会构建标准的\emph{因果注意力掩码}（causal attention mask），使每个位置只能关注自身及更早的词元。如果你对因果注意力掩码和自注意力（self-attention）不熟悉，我写的文章《Understanding and Coding Self-Attention, Multi-Head Attention, Causal-Attention, and Cross-Attention in LLMs》提供了更多背景知识：\href{https://magazine.sebastianraschka.com/p/understanding-and-coding-self-attention}{https://magazine.sebastianraschka.com/p/understanding-and-coding-self-attention}。
+
+提示 \texttt{"}\texttt{2+2?}\texttt{"}\texttt{ }的因果注意力掩码如图 E.3 所示。在因果掩码中，值 \texttt{1} 表示「被掩码屏蔽」，\texttt{0} 表示「允许」。在此图中，第一个词元不能前瞻到后面的位置，第二个词元只能看到前两个位置，依此类推。这就是标准的自回归掩码模式。
+
+\myGraphic{0.92}{images/APPE_F03_Raschka2.png}{图 E.3 单样本生成中使用的因果掩码。词元只能关注自身及更早的位置，这是标准的自回归设置。}
+
+批处理改变了这种情况，因为不同提示的长度通常各不相同。假设我们把 \texttt{"}\texttt{2+2?}\texttt{"} 与稍长一些的提示 \texttt{"}\texttt{3+3=6?}\texttt{"} 一起处理。
+
+由于 PyTorch 张量必须保持矩形，较短的行必须被填充以匹配较长的那一行，如图 E.4 中的左填充所示。
+
+\myGraphic{0.92}{images/APPE_F04_Raschka2.png}{图 E.4 批生成中的左填充。较短的行会被填充到批次中的最大序列长度，而感知填充的掩码确保这些填充位置不会影响注意力。}
+
+图 E.4 显示，我们在内部还保留了一个额外的 \texttt{attn\_mask}。该掩码用于跟踪被填充的位置，其中 \texttt{True} 表示已填充，\texttt{False} 表示未填充。我们借助这个额外的 \texttt{attn\_mask} 找出因果掩码中对应填充词元 ID 的那些词元。对填充的键（key）做掩码、把填充的查询（query）置零，是让批处理的行为与单样本执行相近的重要步骤。
+
+在本附录的余下部分，你将看到如何使用本书配套资料中的脚本，这些脚本为不同章节实现了可选的批处理版本。
+
+\section{第 3 章：批处理版 MATH-500 评估}
+
+本书的配套资料包含第 3 章单样本评估方法的脚本，你可以使用第 7 章介绍的下载函数直接下载并运行它。
+
+\begin{codeboxt}{代码清单 E.3 下载单样本评估脚本}
+from reasoning_from_scratch.ch07 import download_from_github
+
+download_from_github(
+    "ch03/02_math500-verifier-scripts/evaluate_math500.py"
+)
+download_from_github(
+    "ch03/01_main-chapter-code/math500_test.json",
+    out="math500_test.json",
+)
+\end{codeboxt}
+
+通过代码清单 E.3 下载脚本和数据集后，我们可以在终端中按如下方式运行单样本评估（如果你没有使用 \texttt{uv}，只需把 \texttt{uv} \texttt{run} 替换为 \texttt{python}）：
+
+\begin{codebox}
+uv run evaluate_math500.py \
+  --dataset_size 500 \
+  --which_model "reasoning"
+\end{codebox}
+
+配套资料还包含一个批处理版本，它采用了我们前面讨论过的批处理方法。下载过程几乎完全相同，只是要把 \texttt{evaluate\_math500.py} 替换为 \texttt{evaluate\_math500\_batched.py}。
+
+\begin{codeboxt}{代码清单 E.4 下载支持批处理的评估脚本}
+download_from_github(
+    "ch03/02_math500-verifier-scripts/evaluate_math500_batched.py"
+)
+\end{codeboxt}
+
+批处理脚本的用法与非批处理版本非常相似，只是我们现在多提供一个 \texttt{--batch\_size} 参数，用于指定模型应并行处理多少个提示和答案：
+
+\begin{codebox}
+uv run evaluate_math500_batched.py \
+  --dataset_size 500 \
+  --which_model "reasoning" \
+  --batch_size 64
+\end{codebox}
+
+理想的批量大小完全取决于你的硬件能承受多少，因此最好从小值开始，逐步增大，直到达到适合你所用配置的吞吐量和内存上限。
+
+我们会在本附录末尾回到单样本生成与批生成性能的对比。
+
+\section{第 4 章：批处理版自洽性采样}
+
+第 4 章可选的 \texttt{self\_consistency\_math500\_batched.py} 脚本不会把不同的提示混进一个填充后的张量。相反，它把同一个提示重复 \texttt{num\_samples} 次，并行采样多个续写用于自洽性投票，因为针对每个提示的不同采样数做并行化，是我们能够利用的一个自然切入点。
+
+由于每一行都从相同的提示长度开始，这个脚本可以使用 \texttt{reasoning\_from\_scratch.qwen3} 中常规的 \texttt{Qwen3Model}，而不必使用 \texttt{reasoning\_from\_scratch.qwen3\_batched}。换句话说，这里的批次维度用于对同一个提示进行多次采样轨迹（rollout），而不是把长度各异、互不相关的提示填充到一起。
+
+你可以按下面所示下载该脚本。
+
+\begin{codeboxt}{代码清单 E.5 下载支持批处理的自洽性采样}
+download_from_github(
+    "ch04/02_math500-inference-scaling-scripts/"
+    "self_consistency_math500_batched.py"
+)
+\end{codeboxt}
+
+若要下载非批处理版本，只需从代码清单 E.5 的文件名中去掉 \texttt{"}\texttt{\_batched}\texttt{"} 这部分即可。
+
+我们可以按如下方式运行批处理脚本，非批处理脚本的语法在其他方面完全相同：
+
+\begin{codebox}
+uv run self_consistency_math500_batched.py \
+  --which_model base \
+  --temperature 0.9 \
+  --top_p 0.9 \
+  --num_samples 3 \
+  --dataset_size 500 \
+  --prompt_suffix "\n\nExplain step by step."
+\end{codebox}
+
+\section{第 6 章：批处理版组相对策略优化（GRPO）采样轨迹}
+
+第 5 章的自我修正在本质上是串行的，因此并不能从简单的批处理中获得多少好处。原则上，你可以并行地对多个输入运行自我修正循环，但这实现起来并不简单，因此不在本书的配套资料中。下一个批处理示例出现在第 6 章的 RLVR 代码中。
+
+在第 6 章中，我们同样对同一个提示进行多次采样轨迹，因此不需要填充。与 E.5 节一样，代码因此可以继续使用 \texttt{reasoning\_from\_scratch.qwen3} 中常规的 \texttt{Qwen3Model} 类。相关脚本可按如下方式获取。
+
+\begin{codeboxt}{代码清单 E.6 下载支持批处理的 RLVR 脚本}
+download_from_github(
+    "ch06/02_rlvr_grpo_scripts_intro/"
+    "rlvr_grpo_original_no_kl_batched.py"
+)
+\end{codeboxt}
+
+和之前一样，若要下载单次生成的脚本，只需从代码清单 E.6 的文件名中去掉 \texttt{"}\texttt{\_batched}\texttt{"} 即可。
+
+一次典型的批处理运行如下所示：
+
+\begin{codebox}
+uv run rlvr_grpo_original_no_kl_batched.py \
+  --num_rollouts 8 \
+  --batch_size 4 \
+  --max_new_tokens 512
+\end{codebox}
+
+这里，\texttt{--batch\_size} 控制在一次训练步内并行生成多少个采样轨迹。这能提高吞吐量，但也会增加内存压力，因此你可能需要调小 \texttt{--num\_rollouts} 或 \texttt{--max\_new\_tokens}。
+
+\section{第 8 章：批处理版蒸馏}
+
+第 8 章又回到了第 3 章中那种感知填充的风格，因为蒸馏样本的提示和答案长度各不相同。换句话说，我们又一次把长度各异、互不相关的样本批量组织进单个矩形张量，这意味着掩码和填充再次变得重要。你可以按如下方式下载批处理训练脚本，并获取一份示例训练数据集。
+
+\begin{codeboxt}{代码清单 E.7 下载支持批处理的蒸馏脚本}
+from reasoning_from_scratch.ch08 import load_distill_data
+
+download_from_github(
+    "ch08/04_train_with_distillation/distill_batched.py"
+)
+_ = load_distill_data(
+    partition="deepseek-r1-math-train",
+    local_path="deepseek-r1-math-train.json",
+)
+\end{codeboxt}
+
+对于非批处理版本，去掉代码清单 E.7 文件名中的 \texttt{"}\texttt{\_batched}\texttt{"} 部分即可。批处理版本的一次代表性运行如下所示：
+
+\begin{codebox}
+uv run distill_batched.py \
+  --data_path deepseek-r1-math-train.json \
+  --dataset_size 500 \
+  --validation_size 10 \
+  --epochs 2 \
+  --use_think_tokens \
+  --batch_size 32
+\end{codebox}
+
+这里，\texttt{--batch\_size} 让我们能在每个优化步中处理多个蒸馏样本。但由于训练还必须存储激活值，其资源需求可能远高于第 3 章的评估器，因此第 8 章引入了本附录前面讨论过的感知填充批处理策略在训练场景下的对应版本。
+
+\section{单序列生成与批生成}
+
+第 3 章和第 8 章的配套脚本把长度不同的样本批量组织在一起，因此需要感知填充的注意力掩码以及更细致的簿记。第 4 章和第 6 章批量处理同一个提示或同一种采样轨迹设置的重复副本，因此可以沿用常规的模型实现，避开更复杂的填充逻辑。
+
+无论采用哪种方式，批生成都能带来更高的吞吐量和更短的运行时间，代价是更高的内存占用。表 8.1 使用前几节所示的设置，对比了单序列生成与批生成。
+
+\begin{table}[htbp]
+\centering\small
+\centering
+\caption{表 E.1 内存占用与运行时间对比}
+\begin{tabularx}{\linewidth}{@{}c@{}XXXXX}
+\toprule
+ & 脚本 & 批量大小 & 内存 & H100 总时间 & DGX Spark 总时间 \\
+1 & \texttt{evaluate\_\allowbreak{}math500.py} & - & 1.8 GB & 90 min & 174 min \\
+2 & \texttt{evaluate\_\allowbreak{}math500\_\allowbreak{}batched.py} & 64 & 23.39 GB & 16 min & 108 min \\ \addlinespace
+
+3 & \texttt{self\_\allowbreak{}consistency\_\allowbreak{}math500.py} & - & 1.79 GB & 252 min & 340 min \\
+4 & \texttt{self\_\allowbreak{}consistency\_\allowbreak{}math500\_\allowbreak{}batched.py} & 3 & 2.45 GB & 129 min & 243 min \\ \addlinespace
+
+5 & \texttt{rlvr\_\allowbreak{}grpo\_\allowbreak{}original\_\allowbreak{}no\_\allowbreak{}kl.py} & - & 43.35 GB & 68 min & 63 min \\
+6 & \texttt{rlvr\_\allowbreak{}grpo\_\allowbreak{}original\_\allowbreak{}no\_\allowbreak{}kl\_\allowbreak{}batched.py} & 4 & 44.91 GB & 19 min & 23 min \\ \addlinespace
+
+7 & \texttt{distill\allowbreak{}.py} & - & 8.29 GB & 10 min & 32 min \\
+8 & \texttt{distill\_\allowbreak{}batched.py} & 4 & 8.34 GB & 9 min & 28 min \\ \bottomrule
+\end{tabularx}
+\end{table}
+
+如表 E.1 所示，批处理版本总是比单序列版本更快。在大多数情况下，差异非常明显。一个例外是蒸馏（第 7 行和第 8 行），批处理只带来有限的优势。这可能是因为在单批次模式下 GPU 已经被充分利用，而考虑到 Qwen3 60 亿参数模型的体量较小，批生成因额外生成掩码而带来的额外开销并不划算。

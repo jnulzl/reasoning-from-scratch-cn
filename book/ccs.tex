@@ -1,0 +1,362 @@
+% =============================================================================
+%  book/ccs.tex  ——  全书导言区（版式 / 字体 / 自定义命令与环境）
+%  文件结构参考 Cpp23-Best-Practices 模板：
+%      main.tex  →  book/ccs.tex（导言区）  →  book/index.tex（封面 + 目录 + 章节索引）
+%      正文章节：book/content/<类别>/<编号>.tex，由 book/index.tex 中的 \myChapter 等命令加载
+% =============================================================================
+
+\documentclass[12pt,openany,oneside,UTF8]{book}
+\interfootnotelinepenalty=10000
+
+% -----------------------------------------------------------------------------
+%  基础宏包
+% -----------------------------------------------------------------------------
+\usepackage{textcomp}
+\usepackage[T1]{fontenc}
+\usepackage{microtype}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{ifthen}
+\usepackage{pgffor}
+\usepackage{xspace}
+\usepackage{graphicx}
+\usepackage{tikz}
+\usepackage{tabularx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{float}
+\usepackage{enumitem}
+\usepackage{indentfirst}
+\usepackage{subfiles}
+\usepackage{caption}
+\usepackage{xcolor}
+
+% 在导言区（Preamble）添加：
+\usepackage[export]{adjustbox} % 注意必须加上 [export] 参数
+
+% 页面尺寸：沿用《从零构建推理模型》原书（Manning 7.375in × 9.25in）
+% 若想换成模板默认的 A4，把下面这行替换为：\usepackage[a4paper,left=2.5cm,right=2cm,top=2.54cm,bottom=2.54cm]{geometry}
+\usepackage[
+  paperwidth=7.375in, paperheight=9.25in,
+  left=0.75in, right=0.65in, top=0.65in, bottom=0.75in,
+  footskip=0.28in]{geometry}
+
+% -----------------------------------------------------------------------------
+%  ★★★ 字体设置：想要换字体、改字号，只改这一段 ★★★
+% -----------------------------------------------------------------------------
+\usepackage{fontspec}
+\usepackage[fontset=none]{ctex}          % 只借用 ctex 的中文标题名与 \zihao 字号，字体由下面手工指定
+\usepackage[fontsize=10pt]{fontsize}     % 正文字号（与原书一致：原书正文实测 10pt；模板用 11pt）
+
+% 中文字体（本机未装思源宋体，用华文宋体/微软雅黑代替；都是 TrueType，可正常嵌入 PDF）
+% 备选：Source Han Serif / SourceHanSerifSC-SemiBold（模板默认）、Noto Serif CJK SC、SimSun
+\setCJKmainfont[AutoFakeBold=true,AutoFakeSlant=true]{STSong}            % 中文正文（衬线）
+\setCJKsansfont[AutoFakeBold=true,AutoFakeSlant=true]{Microsoft YaHei}   % 中文标题（无衬线）
+\setCJKmonofont[AutoFakeBold=true,AutoFakeSlant=true]{Microsoft YaHei}   % 代码块中的中文注释
+% 拉丁字体（模板默认 Hack；如需完全照模板可把 Georgia 换成 Hack）
+\setmainfont{Georgia}                    % 拉丁正文
+\setsansfont{Microsoft YaHei}            % 拉丁无衬线
+\setmonofont{Consolas}                   % 拉丁等宽（代码）
+\newfontfamily\codehan{Microsoft YaHei}  % 备用的中英文混排字体
+% -----------------------------------------------------------------------------
+
+% -----------------------------------------------------------------------------
+%  版面与段落
+% -----------------------------------------------------------------------------
+\definecolor{titlecolor}{HTML}{1F2A44}   % 标题色（偏深蓝，接近原 PDF 的 Manning 藏青）
+\definecolor{codeframe}{HTML}{C8CDD4}
+\definecolor{codeback}{HTML}{F5F8FC}
+\definecolor{codebacktitle}{HTML}{E6EBF2}
+
+\setlength{\parindent}{2em}                      % 中文书籍惯例：首行缩进两字
+\setlength{\parskip}{2pt plus 1pt minus 1pt}
+\raggedbottom
+
+\setlist[itemize,enumerate,description]{nosep, topsep=4pt, partopsep=0pt, parsep=0pt, leftmargin=2em}
+
+% -----------------------------------------------------------------------------
+%  代码高亮：minted（需要 Pygments + xelatex -shell-escape）
+% -----------------------------------------------------------------------------
+\usepackage[cache=true]{minted}
+\setminted{obeytabs, tabsize=2, breaklines=true, breakanywhere=true,
+           fontsize=\small, autogobble=true,
+           linenos, numbersep=7pt, numberblanklines=false}
+\usepackage[most]{tcolorbox}
+\tcbuselibrary{breakable, minted, skins}
+
+% 无标题代码块
+\newtcblisting{codebox}{
+  listing engine=minted,
+  minted language=python,
+  listing only,
+  size=minimal, arc=0.3mm, breakable, enhanced jigsaw,
+  colframe=codeframe, boxrule=0.4pt, colback=codeback, coltext=black,
+  left=11mm, right=3mm, top=1.5mm, bottom=1mm,
+  overlay={\begin{tcbclipinterior}\fill[black!5](frame.south west)
+    rectangle([xshift=9mm]frame.north west);\end{tcbclipinterior}},
+}
+% 带标题代码块（调用方式：\begin{codeboxt}{代码清单 3.1 加载预训练模型}）
+\newtcblisting{codeboxt}[1]{
+  listing engine=minted,
+  minted language=python,
+  listing only,
+  size=title, arc=0.3mm, breakable, enhanced jigsaw,
+  colframe=codeframe, boxrule=0.4pt, colback=codeback, coltext=black,
+  left=11mm, right=3mm, top=1.5mm, bottom=1mm,
+  lefttitle=2mm, righttitle=2mm, toptitle=0.8mm, bottomtitle=0.8mm,
+  overlay={\begin{tcbclipinterior}\fill[black!5](frame.south west)
+    rectangle([xshift=9mm]frame.north west);\end{tcbclipinterior}},
+  title={#1},
+  colbacktitle=codebacktitle, coltitle=black!80!white,
+  fonttitle=\sffamily\small, fontupper=\small,
+}
+
+% -----------------------------------------------------------------------------
+%  【补丁】minted v3 × tcolorbox × subfiles 路径冲突
+% -----------------------------------------------------------------------------
+%  现象（TeX Live 2026 更新 minted 3.8 / tcolorbox 6.10 之后出现）：
+%      ! Package minted Error: Cannot locate file
+%        "book/content/main/main.listing" (kpsewhich failed).
+%      ! FancyVerb Error: No verbatim file book/content/main/main.listing
+%      → 所有代码块（465 处）全部编译失败，退化为报错而不是高亮。
+%
+%  原因：tcolorbox 的 tcblisting 会把代码正文写到输出目录下的临时文件
+%      （默认 \kvtcb@listingfile = \jobname.listing，即 ./main.listing），
+%      然后调用 \inputminted{...}{main.listing}。
+%      而 minted 的 \minted@define@inputfilepath 会无条件地把当前
+%      \import@path（subfiles/import 设为当前子文件所在目录
+%      "book/content/main/"）前缀到该文件名上，于是去找
+%      "book/content/main/main.listing" —— 这个文件根本不存在。
+%
+%  修法：保留 minted「优先按子文件目录解析」的原意，只在
+%      \import@path + 文件名 确实不存在时，退回按输出目录（当前目录）解析。
+%      对 \inputminted 的常规用法无影响。
+\makeatletter
+\def\minted@define@inputfilepath#1{%
+  \IfPackageLoadedTF{import}%
+   {\IfFileExists{\import@path#1}%
+     {\edef\minted@inputfilepath{\import@path#1}}%
+     {\edef\minted@inputfilepath{#1}}}%
+   {\edef\minted@inputfilepath{#1}}}
+\makeatother
+
+% -----------------------------------------------------------------------------
+%  图表
+% -----------------------------------------------------------------------------
+\ExplSyntaxOn
+% 插图（不浮动，紧跟正文； caption 为图注文字）
+\NewDocumentCommand { \myGraphic } { mmm }
+{
+  \begin{center}
+    \includegraphics[width=#1\textwidth,height=0.86\textheight,keepaspectratio]{#2}\\[4pt]
+    {\small #3}
+  \end{center}
+}
+\ExplSyntaxOff
+
+\captionsetup[figure]{labelformat=empty}
+\captionsetup[table]{labelformat=empty}
+
+% -----------------------------------------------------------------------------
+%  提示框（沿用模板的 myNotic / myTip / myWarning）
+% -----------------------------------------------------------------------------
+\ExplSyntaxOn
+\NewDocumentEnvironment { myNotic } { m }
+{ \begin { tcolorbox } [ breakable, enhanced~jigsaw, arc=0.3mm,
+    colback = blue!5!white, colframe=blue!55!black, boxrule=0.5pt,
+    fonttitle=\sffamily\bfseries, colbacktitle=blue!15!white, coltitle=black,
+    title={#1} ] }
+{ \end   { tcolorbox } }
+
+\NewDocumentEnvironment { myTip } { m }
+{ \begin { tcolorbox } [ breakable, enhanced~jigsaw, arc=0.3mm,
+    colback = green!5!white, colframe=green!45!black, boxrule=0.5pt,
+    fonttitle=\sffamily\bfseries, colbacktitle=green!12!white, coltitle=black,
+    title={#1} ] }
+{ \end   { tcolorbox } }
+
+\NewDocumentEnvironment { myWarning } { m }
+{ \begin { tcolorbox } [ breakable, enhanced~jigsaw, arc=0.3mm,
+    colback = red!5!white, colframe=red!55!black, boxrule=0.5pt,
+    fonttitle=\sffamily\bfseries, colbacktitle=red!12!white, coltitle=black,
+    title={#1} ] }
+{ \end   { tcolorbox } }
+
+% 本书的正文侧栏（sidebar）：中性灰版式，同样可跨页
+\NewDocumentEnvironment { mySidebar } { m }
+{ \begin { tcolorbox } [ breakable, enhanced~jigsaw, arc=0.3mm,
+    colback = black!3!white, colframe=black!45!white, boxrule=0.5pt,
+    fonttitle=\sffamily\bfseries, colbacktitle=black!10!white, coltitle=black,
+    title={#1} ] }
+{ \end   { tcolorbox } }
+
+% 没有小标题的侧栏
+\NewDocumentEnvironment { mySidebarBox } { }
+{ \begin { tcolorbox } [ breakable, enhanced~jigsaw, arc=0.3mm,
+    colback = black!3!white, colframe=black!45!white, boxrule=0.5pt ] }
+{ \end   { tcolorbox } }
+
+% 章节内部的无编号小标题（不进目录）
+\NewDocumentCommand { \mySamllsectionNoContent } { m }
+{ \par\vspace{0.35em}\noindent\textbf{\sffamily #1}\par\vspace{0.15em}\nopagebreak[4] }
+\NewDocumentCommand { \mySmallsection } { m }
+{ \mySamllsectionNoContent { #1 } }
+\ExplSyntaxOff
+
+% -----------------------------------------------------------------------------
+%  标题样式
+% -----------------------------------------------------------------------------
+\usepackage{titlesec}
+\titleformat{name=\chapter,numberless}[hang]
+  {\sffamily\bfseries\color{titlecolor}\zihao{2}}{}{0pt}{}
+\titlespacing*{name=\chapter,numberless}{0pt}{0pt}{1.4em}
+\titleformat{\section}
+  {\sffamily\bfseries\color{titlecolor}\zihao{3}}{\thesection\quad}{0pt}{}
+\titleformat{name=\section,numberless}
+  {\sffamily\bfseries\color{titlecolor}\zihao{3}}{}{0pt}{}
+\titlespacing*{\section}{0pt}{1.6em}{0.5em}
+\titleformat{\subsection}
+  {\sffamily\bfseries\color{titlecolor}\zihao{4}}{\thesubsection\quad}{0pt}{}
+\titlespacing*{\subsection}{0pt}{1.2em}{0.4em}
+\titleformat{\subsubsection}
+  {\sffamily\bfseries\color{titlecolor}\zihao{-4}}{\thesubsubsection\quad}{0pt}{}
+\titlespacing*{\subsubsection}{0pt}{1em}{0.3em}
+
+\setcounter{secnumdepth}{4}
+\setcounter{tocdepth}{2}
+
+% -----------------------------------------------------------------------------
+%  目录 / 书签 / 超链接
+% -----------------------------------------------------------------------------
+\usepackage{url}
+\usepackage[depth=3]{bookmark}
+\usepackage{hyperref}
+\hypersetup{
+  colorlinks=true,
+  linkcolor=black,
+  citecolor=black,
+  filecolor=black!35!blue,
+  urlcolor=black!35!blue,
+  breaklinks=true,
+  pdfstartview=Fit,
+  pdftitle={从零构建推理模型},
+  pdfauthor={Sebastian Raschka},
+  pdfsubject={Build a Reasoning Model (From Scratch) 中文版},
+  pdfkeywords={LLM, reasoning, PyTorch, 推理模型},
+}
+\renewcommand{\contentsname}{目录}
+
+% 目录里的章条目也补上引导点（默认章条目是空白的，只有节条目有点）
+% 其余与 book.cls 原定义一致：加粗、段前空 0.8em、页码右对齐
+\makeatletter
+\renewcommand*\l@chapter[2]{%
+  \ifnum \c@tocdepth >\m@ne
+    \addpenalty{-\@highpenalty}%
+    \vskip 0.8em \@plus\p@
+    \begingroup
+      \parindent \z@ \rightskip \@pnumwidth
+      \parfillskip -\@pnumwidth
+      \leavevmode \bfseries
+      #1\nobreak
+      \leaders\hbox{$\m@th\mkern\@dotsep mu\hbox{.}\mkern\@dotsep mu$}\hfill
+      \nobreak\hb@xt@\@pnumwidth{\hss #2}\par
+      \penalty\@highpenalty
+    \endgroup
+  \fi}
+% 页眉里的节号去掉 book.cls 自带的句点（"2.5." → "2.5"），与目录、正文一致
+% 注：某些宏包会在导言区尾声重新定义 \sectionmark，所以这里延到 \begin{document} 时再 \let 一次
+\newcommand{\my@sectionmark}[1]{\markright{\ifnum\c@secnumdepth>\z@\thesection\quad\fi #1}}
+\let\sectionmark\my@sectionmark
+\AtBeginDocument{\let\sectionmark\my@sectionmark}
+\makeatother
+
+% -----------------------------------------------------------------------------
+%  页眉页脚：左侧书名，右侧当前章名，页脚居中页码
+% -----------------------------------------------------------------------------
+\usepackage{fancyhdr}
+\setlength{\headheight}{15pt}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\sffamily\color{titlecolor} 从零构建推理模型}
+\fancyhead[R]{\small\sffamily\color{titlecolor} \nouppercase{\rightmark}}
+\fancyfoot[C]{\small\thepage}
+\renewcommand{\headrulewidth}{0.3pt}
+\renewcommand{\footrulewidth}{0pt}
+\fancypagestyle{plain}{\fancyhf{}\fancyfoot[C]{\small\thepage}%
+  \renewcommand{\headrulewidth}{0pt}}
+% 章名写入页眉标记
+\newcommand{\chapmark}[1]{\markboth{#1}{#1}}
+
+% -----------------------------------------------------------------------------
+%  Unicode 符号兜底（原书里的数学/箭头符号，当前字体缺字形时映射到等价写法）
+% -----------------------------------------------------------------------------
+\usepackage{newunicodechar}
+\newunicodechar{→}{\(\to\)}
+\newunicodechar{✓}{\(\checkmark\)}
+\newunicodechar{♾}{\(\infty\)}
+\newunicodechar{ϵ}{\(\epsilon\)}
+\newunicodechar{𝜇}{\(\mu\)}
+\newunicodechar{ᵢ}{\(_\mathrm{i}\)}
+\newunicodechar{ⱼ}{\(_\mathrm{j}\)}
+\newunicodechar{ₙ}{\(_\mathrm{n}\)}
+\newunicodechar{▕}{\(\vert\)}
+\newunicodechar{▏}{\(\vert\)}
+\newunicodechar{⧄}{\(\square\)}
+\newunicodechar{️}{}
+\newunicodechar{𝐴}{\(A\)}
+\newunicodechar{𝐿}{\(L\)}
+\newunicodechar{𝑇}{\(T\)}
+\newunicodechar{𝑒}{\(e\)}
+\newunicodechar{𝑓}{\(f\)}
+\newunicodechar{𝑔}{\(g\)}
+\newunicodechar{𝑖}{\(i\)}
+\newunicodechar{𝑙}{\(l\)}
+\newunicodechar{𝑜}{\(o\)}
+\newunicodechar{𝑟}{\(r\)}
+\newunicodechar{𝑡}{\(t\)}
+\newunicodechar{𝑥}{\(x\)}
+\newunicodechar{𝑦}{\(y\)}
+
+% -----------------------------------------------------------------------------
+%  章节命令（对应模板的 \myChapter / \myPart；本书没有「部分」，并增加前言/附录两类）
+% -----------------------------------------------------------------------------
+\ExplSyntaxOn
+% 编号正文章节：\myChapter{章号}{标题}{文件}
+\NewDocumentCommand { \myChapter } { mmm }
+{
+  \setcounter{chapter}{#1}
+  \setcounter{section}{0}
+  \chapter*{第~#1~章\quad #2}
+  \addcontentsline{toc}{chapter}{第~#1~章\quad #2}
+  \chapmark{第~#1~章\quad #2}
+  \subfile{#3}
+}
+% 附录：\myAppendix{序号 1..7}{标题}{文件}（自动显示为「附录 A/B/C…」）
+\NewDocumentCommand { \myAppendix } { mmm }
+{
+  \setcounter{chapter}{#1}
+  \setcounter{section}{0}
+  \chapter*{附录~\Alph{chapter}\quad #2}
+  \addcontentsline{toc}{chapter}{附录~\Alph{chapter}\quad #2}
+  \chapmark{附录~\Alph{chapter}\quad #2}
+  \subfile{#3}
+}
+% 前言类：进目录但无编号
+\NewDocumentCommand { \myFront } { mm }
+{
+  \chapter*{#1}
+  \addcontentsline{toc}{chapter}{#1}
+  \chapmark{#1}
+  \subfile{#2}
+}
+% 扉页/版权类：不进目录
+\NewDocumentCommand { \myFrontNoToc } { m }
+{
+  \clearpage
+  \markboth{}{}
+  \subfile{#1}
+}
+\ExplSyntaxOff
+
+% LaTeX 原文中零散出现的换行：保持语义，但不额外增加段间距
+\newcommand{\keeplinebreak}{}  % 预留钩子（如需全局处理 \newline 可在此重定向）

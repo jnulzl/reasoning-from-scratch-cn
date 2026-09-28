@@ -1,0 +1,205 @@
+本书使用 6 亿参数（0.6B）的 Qwen3 基座模型（base model），因为它是 Qwen3 系列中最小的模型，也因此最容易在消费级硬件上运行。不过，附录 C 中的同一份 \texttt{Qwen3Model} 实现并不局限于 0.6B 检查点。我们同样可以用它来加载更大的 Qwen3 检查点，所用的正是我们从零实现的同一套 PyTorch 代码。
+
+在实践中，这意味着一旦掌握了如何使用 0.6B 模型，迁移到更大的模型主要涉及三处改动：
+
+\begin{itemize}
+\item 选择与之匹配的配置字典
+\item 从 Hugging Face 下载更大的检查点
+\item 为基座变体或推理变体加载合适的分词器
+\end{itemize}
+
+本附录以 Qwen3 4B 模型为例演示这一过程，因为它明显强于 0.6B 模型，同时又比更大的 8B、14B 和 32B 变体更容易驾驭。
+
+\section{更大的稠密 Qwen3 配置}
+
+本书的代码仓库在 \texttt{reasoning\_from\_scratch.appendix\_c} Python 库中为若干个更大的 Qwen3 模型提供了配置字典，见表 D.1。你也可以直接在以下地址查看源码：\href{https://github.com/rasbt/reasoning-from-scratch/blob/main/reasoning\_from\_scratch/appendix\_c.py}{https://github.com/rasbt/reasoning-from-scratch/blob/main/reasoning\_from\_scratch/appendix\_c.py}。
+
+\begin{table}[htbp]
+\centering\small
+\centering
+\caption{表 D.1 Qwen3 配置（大于 0.6B）}
+\begin{tabularx}{\linewidth}{XX}
+\toprule
+模型规模 & 配置 Python 字典 \\
+1.7B & QWEN3\_\allowbreak{}CONFIG\_\allowbreak{}1\_\allowbreak{}7B \\
+4B & QWEN3\_\allowbreak{}CONFIG\_\allowbreak{}4B \\
+8B & QWEN3\_\allowbreak{}CONFIG\_\allowbreak{}8B \\
+14B & QWEN3\_\allowbreak{}CONFIG\_\allowbreak{}14B \\
+32B & QWEN3\_\allowbreak{}CONFIG\_\allowbreak{}32B \\ \bottomrule
+\end{tabularx}
+\end{table}
+
+表 D.1 中列出的模型都是稠密（dense）Qwen3 变体，与本书使用、并在附录 C 中讨论的 Qwen3 0.6B 模型类似。这里的“稠密”意味着它们不是 Qwen3 的稀疏混合专家（MoE）变体。本书的代码不支持 MoE 模型，但可以在这里找到一份从零实现：\href{https://github.com/rasbt/LLMs-from-scratch/tree/main/ch05/11\_qwen3}{https://github.com/rasbt/LLMs-from-scratch/tree/main/ch05/11\_qwen3}。
+
+图 D.1 以更直观的方式总结了表 D.1 中各模型之间的差异。可以看到，不同规模的 Qwen3 变体都采用与附录 C 中 0.6B 模型相同的整体架构模式。它们同样使用词元（token）嵌入、分组查询注意力（GQA）、旋转位置嵌入、前馈层和 RMS 归一化。差异在于模型维度，例如嵌入维度、层数、注意力头数以及前馈隐藏维度。
+
+\myGraphic{0.92}{images/APPD_F01_Raschka2.png}{图 D.1 不同 Qwen3 变体的比较，从 6 亿到 320 亿参数}
+
+表 D.2 列出了把模型加载到内存（以及显存）中所需的内存估算值。作为一个粗略的下界，以 bfloat16 精度（LLM 的常见默认精度）存储权重，每个参数大约需要 2 字节。
+
+\begin{table}[htbp]
+\centering\small
+\centering
+\caption{表 D.2 Qwen3 模型规模}
+\begin{tabularx}{\linewidth}{XX}
+\toprule
+模型规模 & 以 bfloat16 存储权重所需的内存估算值 \\
+1.7B & 约 3.4 GB \\
+4B & 约 8 GB \\
+8B & 约 16 GB \\
+14B & 约 28 GB \\
+32B & 约 64 GB \\ \bottomrule
+\end{tabularx}
+\end{table}
+
+表 D.2 中的数字只是权重本身的大致下界。实际运行时的内存占用会更高，因为我们还需要为激活值、临时缓冲区、KV 缓存（KV cache）等分配内存。此外，在把张量复制到 \texttt{Qwen3Model} 实例中的过程中，它们可能同时存在于多个位置，因此模型加载会暂时增加内存占用。更多细节可参见我为 \emph{《从零构建大语言模型》} 一书准备的补充材料：\href{https://github.com/rasbt/LLMs-from-scratch/tree/main/ch05/08\_memory\_efficient\_weight\_loading}{https://github.com/rasbt/LLMs-from-scratch/tree/main/ch05/08\_memory\_efficient\_weight\_loading}。
+
+\section{下载更大的检查点概述}
+
+本书使用的 0.6B 检查点为了尽量减少对外部代码的依赖，被我转换成了 PyTorch 检查点；而更大的官方 Qwen3 模型通常以 \texttt{safetensors} 文件的形式发布，有时还会拆分到多个分片中。
+
+\texttt{reasoning-from-scratch} Python 库提供了一个辅助函数 \texttt{download\_from\_huggingface\_from\_snapshots} 来处理这件事。我们将在下一节使用这个函数，它会把 Hugging Face 快照下载到本地目录，然后加载单个 \texttt{model.safetensors} 文件，或者加载通过 \texttt{model.safetensors.index.json} 文件索引的多个分片。
+
+由于这个辅助函数依赖于前面几章未曾用到的额外软件包，你可能需要先安装它们：
+
+\begin{codebox}
+uv add huggingface_hub safetensors
+\end{codebox}
+
+或
+
+\begin{codebox}
+pip install huggingface_hub safetensors
+\end{codebox}
+
+安装好这些软件包后，加载更大的检查点遵循与之前相同的大致流程：下载文件、实例化模型、加载权重、准备分词器，然后运行文本生成——你将在下一节看到具体做法。
+
+\section{加载更大的基座模型}
+
+下面我们用一个完整的例子来演示，使用官方的 Qwen3 4B 基座模型。第一步（见代码清单 D.1）是从 Hugging Face 模型中心（\href{https://huggingface.co/Qwen/Qwen3-4B-Base}{https://huggingface.co/Qwen/Qwen3-4B-Base}）下载模型快照。
+
+\begin{codeboxt}{代码清单 D.1 下载模型权重}
+from pathlib import Path
+from reasoning_from_scratch.ch02 import get_device
+from reasoning_from_scratch.appendix_c import (
+    download_from_huggingface_from_snapshots,
+)
+
+device = get_device()
+local_dir = Path("qwen3-4b-base")
+
+weights = download_from_huggingface_from_snapshots(
+    repo_id="Qwen/Qwen3-4B-Base",
+    local_dir=local_dir,
+)
+\end{codeboxt}
+
+\texttt{local\_dir} 路径指定快照在磁盘上的存储位置。在本例中，我们把 4B 基座模型放在专用的 \texttt{qwen3-4b-base} 文件夹里，以便与全书使用的较小模型所在的 \texttt{qwen3} 目录区分开。
+
+接下来，我们用代码清单 D.2 中的代码实例化 4B 模型，并把 Hugging Face 权重加载到从零实现的 \texttt{Qwen3Model} 中。
+
+\begin{codeboxt}{代码清单 D.2 将权重加载进 \texttt{Qwen3Model}}
+from reasoning_from_scratch.qwen3 import (
+    Qwen3Model,
+    load_hf_weights_into_qwen,
+)
+from reasoning_from_scratch.appendix_c import QWEN3_CONFIG_4B
+
+model = Qwen3Model(QWEN3_CONFIG_4B)
+load_hf_weights_into_qwen(
+    model,
+    param_config={
+        "n_layers": QWEN3_CONFIG_4B["n_layers"],
+        "hidden_dim": QWEN3_CONFIG_4B["hidden_dim"],
+    },
+    params=weights,
+)
+model.to(device)
+model.eval()
+\end{codeboxt}
+
+\texttt{QWEN3\_CONFIG\_4B} 字典定义了 4B 模型的架构维度。随后，\texttt{load\_hf\_weights\_into\_qwen} 辅助函数会把 Hugging Face 的参数名映射为我们自己实现中使用的参数名。之后，\texttt{model.to(device)} 把模型移动到选定的设备上，\texttt{model.eval()} 则把模型切换到推理模式。
+
+模型加载完成后，我们准备分词器。
+
+\begin{codeboxt}{代码清单 D.3 加载基座分词器}
+from reasoning_from_scratch.qwen3 import Qwen3Tokenizer
+import shutil
+
+tokenizer_src = local_dir / "tokenizer.json"
+tokenizer_path = local_dir / "tokenizer-base.json"
+
+if not tokenizer_path.exists():
+    shutil.copyfile(tokenizer_src, tokenizer_path)
+
+tokenizer = Qwen3Tokenizer(tokenizer_file_path=tokenizer_path)
+\end{codeboxt}
+
+Hugging Face 快照以通用的文件名 \texttt{tokenizer.json} 保存分词器。在代码清单 D.3 中，我们把它复制为 \texttt{tokenizer-base.json}，以便与下一节将要使用的推理分词器区分开。
+
+现在，我们可以像第 2 章使用较小的 0.6B 模型那样，用这个模型进行生成。
+
+\begin{codeboxt}{代码清单 D.4 生成文本}
+import torch
+from reasoning_from_scratch.ch02 import (
+    generate_text_basic_stream_cache,
+)
+
+prompt = "Explain large language models in two sentences."
+input_ids = torch.tensor(
+    tokenizer.encode(prompt),
+    device=device,
+).unsqueeze(0)
+
+for token in generate_text_basic_stream_cache(
+    model=model,
+    token_ids=input_ids,
+    max_new_tokens=64,
+    eos_token_id=tokenizer.eos_token_id,
+):
+    print(tokenizer.decode(token.squeeze(0).tolist()), end="", flush=True)
+\end{codeboxt}
+
+与第 2 章一样，我们对输入提示（prompt）进行编码，通过 \texttt{unsqueeze(0)} 添加一个批量维度，然后逐个流式输出生成的词元。
+
+输出如下：
+
+\begin{codebox}
+ Large language models are artificial intelligence systems that use deep learning
+techniques to understand and generate human-like text. They are trained on vast
+amounts of data and can perform a wide range of natural language processing tasks,
+such as translation, summarization, and question answering.
+\end{codebox}
+
+这正是不论模型规模如何都复用同一套 \texttt{Qwen3Model} 抽象所带来的好处。只要检查点和分词器设置正确，推理代码看起来基本相同。
+
+\section{加载更大的推理变体}
+
+同样的思路也适用于规模更大的推理风格 Qwen3 模型。给定模型规模的架构保持不变。与上一节相比，只有检查点和分词器的设置发生了变化。
+
+例如，要加载 4B 推理变体而不是 4B 基座变体，我们需要
+
+\begin{itemize}
+\item 把仓库 ID 从 \texttt{Qwen/Qwen3-4B-Base} 换成 \texttt{Qwen/Qwen3-4B}
+\item 把 \texttt{tokenizer.json} 文件复制或重命名为 \texttt{tokenizer-reasoning.json}
+\item 使用代码清单 D.5 中的代码初始化分词器
+\end{itemize}
+
+\begin{codeboxt}{代码清单 D.5 加载推理分词器}
+tokenizer = Qwen3Tokenizer(
+    tokenizer_file_path=tokenizer_path,
+    apply_chat_template=True,
+    add_generation_prompt=True,
+    add_thinking=True,
+)
+\end{codeboxt}
+
+正如第 2 章和第 8 章所讨论的，这三项分词器设置与推理模型使用的聊天式提示格式相匹配。换言之，我们仍然使用相同的 4B 架构配置（\texttt{QWEN3\_CONFIG\_4B}），只是把它与推理检查点以及推理风格的分词器行为搭配在一起。
+
+其余加载和使用模型的代码保持不变。我们仍然下载快照，实例化 \texttt{Qwen3Model(QWEN3\_CONFIG\_4B)}，通过 \texttt{load\_hf\_weights\_into\_qwen} 加载权重，把模型移到目标设备，并使用第 2 章中的同一个流式函数生成文本。
+
+\section{实用建议}
+
+本附录的要点在于：只要选定匹配的配置字典和分词器设置，附录 C 中同一份从零实现的模型代码就可以复用到更大的官方 Qwen3 检查点上。这意味着迁移到更大的模型在很大程度上只是加载不同的检查点和配置，而不是学习一套全新的概念。
+
+如果你想在这里展示的 4B 例子之外做更多尝试，1.7B 和 8B 变体是顺理成章的下一步。如果 4B 对你的硬件而言资源消耗过大，那么 1.7B 模型是相对 0.6B 的一个小幅升级。8B 模型则大得多，如果硬件带得动，它可能产生更强的输出。

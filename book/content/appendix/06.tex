@@ -1,0 +1,627 @@
+\section{理解 LLM 的主要评估方法}
+
+在实践中，评估已训练 LLM 有四种常见方式：\emph{多项选择}、\emph{验证器}、\emph{排行榜}和 \emph{LLM 评委}，如图 F.1 所示。研究论文、营销材料、技术报告和模型卡（model card，指 LLM 专用的技术报告）往往会给出其中两类或更多类别的结果。
+
+\myGraphic{0.92}{images/APPF_F01_Raschka2.png}{图 F.1 本书涵盖主题的模型，重点展示本附录涉及的两大评估类别：基于基准测试的评估与基于判断的评估}
+
+如图 F.1 所示，这里介绍的四种评估类别可分为两组：\emph{基于基准测试的评估}与\emph{基于判断的评估}。其他指标，例如\emph{训练损失、困惑度}和\emph{奖励}，通常在模型开发过程中内部使用。它们在第 6 章至第 8 章的模型训练章节中讨论。
+
+\section{评估答案选项的准确率}
+
+从历史上看，最广泛使用的评估方法之一就是多项选择基准测试，例如 \emph{MMLU}（Massive Multitask Language Understanding 的缩写，\href{https://huggingface.co/datasets/cais/mmlu}{https://huggingface.co/datasets/cais/mmlu}）。
+
+图 F.2 展示了 MMLU 数据集中的一个样例。完整的 MMLU 数据集包含 57 个学科（从高中数学到生物学），总计约 1.6 万道多项选择题。性能以准确率（正确回答的题目比例）来衡量；例如，如果 16,000 道题中有 14,000 道回答正确，得分就是 87.5\%。
+
+\myGraphic{0.92}{images/APPF_F02_Raschka2.png}{图 F.2 通过将 LLM 在 MMLU 上的多项选择预测与数据集中的正确答案进行比较来评估 LLM}
+
+诸如 MMLU 这样的多项选择基准测试，以直接、可量化的方式考查 LLM 的知识回忆能力，类似于标准化测试、许多学校考试或驾照理论考试。
+
+请注意，图 F.2 展示的是多项选择评估的简化版本，其中将模型预测的答案字母直接与正确字母比较。其他常用方法采用对数概率（log-probability）评分（对数概率在第 4 章有更详细的讨论）。
+
+以下小节将演示如何用代码实现图 F.2 所示的 MMLU 评分。端到端的 MMLU 脚本，包括不同的评分变体，将作为附加材料在本书的代码仓库中提供。
+
+\subsection{加载模型}
+
+在 MMLU 上评估模型之前，必须先加载预训练模型。以下代码与代码清单 3.1 相同。
+
+\begin{codeboxt}{代码清单 F.1 加载预训练模型}
+from pathlib import Path
+import torch
+from reasoning_from_scratch.ch02 import get_device
+from reasoning_from_scratch.qwen3 import (
+    download_qwen3_small, Qwen3Tokenizer,
+    Qwen3Model, QWEN_CONFIG_06_B
+)
+
+device = get_device()
+torch.set_float32_matmul_precision("high")  #1
+
+# device = "cpu"  #2
+
+WHICH_MODEL = "base"  #3
+
+if WHICH_MODEL == "base":
+    download_qwen3_small(
+        kind="base", tokenizer_only=False, out_dir="qwen3"
+    )
+    tokenizer_path = Path("qwen3") / "tokenizer-base.json"
+    model_path = Path("qwen3") / "qwen3-0.6B-base.pth"
+    tokenizer = Qwen3Tokenizer(tokenizer_file_path=tokenizer_path)
+
+elif WHICH_MODEL == "reasoning":
+    download_qwen3_small(
+        kind="reasoning", tokenizer_only=False, out_dir="qwen3"
+    )
+    tokenizer_path = Path("qwen3") / "tokenizer-reasoning.json"
+    model_path = Path("qwen3") / "qwen3-0.6B-reasoning.pth"
+    tokenizer = Qwen3Tokenizer(
+        tokenizer_file_path=tokenizer_path,
+        apply_chat_template=True,
+        add_generation_prompt=True,
+        add_thinking=True,
+    )
+
+else:
+    raise ValueError(f"Invalid choice: WHICH_MODEL={WHICH_MODEL}")
+
+model = Qwen3Model(QWEN_CONFIG_06_B)
+model.load_state_dict(torch.load(model_path))
+model.to(device)
+
+USE_COMPILE = False  #4
+if USE_COMPILE:
+  torch._dynamo.config.allow_unspec_int_on_nn_module = True
+  model = torch.compile(model)
+\end{codeboxt}
+{\noindent\small\textit{\#1 将精度从 “highest” 降低，以便在适用时启用 Tensor Cores \newline \#2 如果设备存在兼容性问题，请取消注释此行。 \newline \#3 默认使用基础模型，与第 2 章类似 \newline \#4 可选地设为 true 以启用模型编译。}\par}
+
+\subsection{检查生成的答案字母}
+
+现在我们将实现最简单、或许也最直观的 MMLU 评分方法：检查生成的多项选择答案字母是否与正确答案匹配。这与图 F.2 所示的做法类似。
+
+我们将使用 MMLU 数据集中的一个样例：
+
+\begin{codebox}
+example = {
+    "question": (
+        "How many ways are there to put 4 distinguishable"
+        " balls into 2 indistinguishable boxes?"
+    ),
+    "choices": ["7", "11", "16", "8"],
+    "answer": "D",
+}
+\end{codebox}
+
+接下来，我们定义一个用于格式化 LLM 提示（prompt）的函数。
+
+\begin{codeboxt}{代码清单 F.2 格式化 LLM 提示}
+def format_prompt(example):
+    return (
+        f"{example['question']}\n"
+        f"A. {example['choices'][0]}\n"
+        f"B. {example['choices'][1]}\n"
+        f"C. {example['choices'][2]}\n"
+        f"D. {example['choices'][3]}\n"
+        "Answer: " #1
+    )
+\end{codeboxt}
+{\noindent\small\textit{\#1 末尾的空格有助于让下一个词元是单个字母。}\par}
+
+我们在该 MMLU 样例上执行这个函数，看看格式化后的 LLM 输入是什么样子：
+
+\begin{codebox}
+prompt = format_prompt(example)
+print(prompt)
+\end{codebox}
+
+输出如下：
+
+\begin{codebox}
+How many ways are there to put 4 distinguishable balls into 2
+indistinguishable boxes?
+A. 7
+B. 11
+C. 16
+D. 8
+Answer:
+\end{codebox}
+
+上面的模型提示为模型提供了答案选项列表，并以 \texttt{"}\texttt{Answer: }\texttt{"} 文本结尾，促使模型生成正确答案。
+
+虽然这并非绝对必要，但有时在输入中提供一些附带正确答案的额外问题会有所帮助，这样模型就能看到期望它如何完成该任务。（例如，提供五个示例的情况称为 5-shot MMLU。）不过，对于当前这一代 LLM 而言，即便是基础模型也已经相当有能力，因此并不需要这样做。
+
+\begin{mySidebar}{加载不同的 MMLU 样例}
+
+可以直接从 \texttt{datasets} 库加载 MMLU 数据集中的样例（可用 \texttt{pip install datasets} 或 \texttt{uv add datasets} 安装）：
+
+\begin{codebox}
+from datasets import load_dataset
+configs = get_dataset_config_names("cais/mmlu")
+dataset = load_dataset("cais/mmlu", "high_school_mathematics")
+
+example = dataset["test"][0]  #1
+print(example)
+\end{codebox}
+{\noindent\small\textit{\#1 查看测试集中的第一个样例。}\par}
+
+这里我们使用了 \texttt{"}\texttt{high\_school\_mathematics}\texttt{"} 子集。要获取其他子集的列表，可使用以下代码：
+
+\begin{codebox}
+from datasets import get_dataset_config_names
+subsets = get_dataset_config_names("cais/mmlu")
+print(subsets)
+\end{codebox}
+
+\end{mySidebar}
+
+接下来，我们对提示进行分词，并将其包装为 PyTorch 张量对象，作为 LLM 的输入（与第 2 章的做法类似）：
+
+\begin{codebox}
+prompt_ids = tokenizer.encode(prompt)
+prompt_fmt = torch.tensor(prompt_ids, device=device).unsqueeze(0)
+\end{codebox}
+
+现在我们来定义主评分函数，它生成少量词元（默认八个），并提取模型输出的第一个字母 A、B、C 或 D。
+
+\begin{codeboxt}{代码清单 F.3 提取生成的字母}
+from reasoning_from_scratch.ch02 import (
+    generate_text_basic_stream_cache
+)
+
+def predict_choice(
+    model, tokenizer, prompt_fmt, max_new_tokens=8
+):
+    pred = None
+    for t in generate_text_basic_stream_cache(
+        model=model,
+        token_ids=prompt_fmt,
+        max_new_tokens=max_new_tokens,
+        eos_token_id=tokenizer.eos_token_id,
+    ):
+        answer = tokenizer.decode(t.squeeze(0).tolist())
+        for letter in answer:
+            letter = letter.upper()
+            if letter in "ABCD":  #1
+                pred = letter
+                break
+        if pred:
+            break
+    return pred
+\end{codeboxt}
+{\noindent\small\textit{\#1 一旦出现字母就停止。}\par}
+
+现在我们可以用代码清单 F.3 中的函数来检查生成的字母：
+
+\begin{codebox}
+pred1 = predict_choice(model, tokenizer, prompt_fmt)
+print(
+    f"Generated letter: {pred1}\n"
+    f"Correct? {pred1 == example['answer']}"
+)
+\end{codebox}
+
+结果如下：
+
+\begin{codebox}
+Generated letter: C
+Correct? False
+\end{codebox}
+
+可以看到，在这个例子中生成的答案是错误的（\texttt{False}）。
+
+\begin{mySidebar}{多项选择答案的格式}
+
+为便于说明，本节实现的是多项选择评估的简化版本，即将模型预测的答案字母直接与正确字母比较。在实践中还存在更常用的变体，例如对数概率（log-probability）评分，它不是只检查最终选定的字母，而是衡量模型认为每个候选答案有多大的可能性。（基于概率的评分在第 5 章讨论。）对于推理模型，评估还可以包括在把正确答案作为输入时，评估模型生成该答案的可能性。
+
+无论采用哪种变体，评估本质上仍是检查模型能否从预定义的答案选项中正确选择。这些变体的示例已作为可选的附加材料收录在代码仓库中。
+
+\end{mySidebar}
+
+像 MMLU 这样的多项选择基准测试有一个局限：它们只衡量 LLM 从预定义选项中做选择的能力，因此除了用来检查模型相对于基础模型是否遗忘了知识、遗忘了多少之外，对于评估推理能力并没有太大用处。它们无法体现自由形式的写作能力或实际用途。尽管如此，它们仍然是一种简单而有用的诊断手段：MMLU 得分高并不一定意味着模型在实际使用中表现强劲，但得分低则可以凸显潜在的知识缺口。
+
+\section{使用验证器检查答案}
+
+与上一节讨论的多项选择问答相关，基于验证的方法用准确率指标来量化 LLM 的能力。但与多项选择基准测试不同，验证方法允许 LLM 给出自由形式的答案。随后我们提取答案中的相关部分，并用验证器将其与数据集中提供的正确答案比较，如图 F.3 所示。
+
+\myGraphic{0.92}{images/APPF_F03_Raschka2.png}{图 F.3 在自由形式问答中用基于验证的方法评估 LLM。模型生成自由形式的答案（其中可能包含多个步骤）以及最终带框答案，该答案会被提取出来，并与数据集中的正确答案比较。}
+
+如图 F.3 所示，在将提取出的答案与提供的答案比较时，我们可以使用代码解释器或计算器软件等外部工具。
+
+其缺点是，这种方法只能应用于易于验证（理想情况下还能确定性地验证）的领域，例如数学和代码。此外，这种方法可能引入额外的复杂性和依赖，还可能会把部分评估负担从模型本身转移到外部工具上。
+
+由于这种方法让我们能够以编程方式生成无限多的数学题变体，并且能受益于逐步推理，它已成为推理模型评估与开发的基石。第 3 章给出了这种方法的一个详尽示例，因此这里不再做代码演示。
+
+\section{使用偏好和排行榜比较模型}
+
+到目前为止，我们已经介绍了两类能提供易于量化指标（如模型准确率）的方法。但前面讨论的方法都没有以更全面的方式评估 LLM，例如考虑回复的风格。在本节中，如图 F.4 所示，我们将讨论一种基于判断的方法：LLM 排行榜。
+
+\myGraphic{0.92}{images/APPF_F04_Raschka2.png}{图 F.4 本书涵盖主题的模型，重点展示本附录涉及的基于判断与基于基准测试的评估方法。前面几节已经介绍了基于基准测试的方法（多项选择和验证器），现在我们介绍用于衡量 LLM 性能的基于判断的方法，本节重点关注排行榜。}
+
+排行榜方法是一种基于判断的方式，它不按准确率数值或其他固定的基准测试分数对模型排名，而是根据用户（或另一个 LLM）对其输出的偏好来排名。一个流行的排行榜是 \emph{Arena}（原 Chatbot Arena，\href{https://arena.ai/leaderboard/text}{https://arena.ai/leaderboard/text}），用户在其中比较两个模型（既可以是用户自选的，也可以是匿名的）的回复，并为自己更偏好的那个投票，如图 F.5 所示。
+
+\myGraphic{0.92}{images/APPF_F05_Raschka2.png}{图 F.5 基于判断的排行榜界面示例（Arena）。两个 LLM 收到相同的提示，它们的回复并排显示，用户为自己更偏好的答案投票。}
+
+这些偏好投票如图 F.5 所示收集，随后在所有用户之间汇总成一个排行榜，按用户偏好对不同的模型排名。在本节的剩余部分，我们将实现一个简单的排行榜示例。
+
+假设用户在与图 F.5 类似的设置中向不同的 LLM 发送提示。以下列表表示成对投票，其中第一个模型是获胜方：
+
+\begin{codebox}
+votes = [
+    ("GPT-5", "Claude-3"),
+    ("GPT-5", "Llama-4"),
+    ("Claude-3", "Llama-3"),
+    ("Llama-4", "Llama-3"),
+    ("Claude-3", "Llama-3"),
+    ("GPT-5", "Llama-3"),
+]
+\end{codebox}
+
+在这个列表中，votes 列表里的每个元组都表示两个模型之间的一次成对偏好，写作 \texttt{(winner,} \texttt{loser)}。因此 \texttt{(}\texttt{"}\texttt{GPT-5}\texttt{"}\texttt{,} \texttt{"}\texttt{Claude-3}\texttt{"}\texttt{)} 表示某位用户更喜欢 GPT-5 的答案，而不是 Claude-3 模型的答案。
+
+在本节的剩余部分，我们会把 votes 列表转换成一个排行榜。我们将使用流行的 Elo 评分系统，它最初是为给国际象棋选手排名而开发的。每个模型都从一个基线分数开始。之后，在每次比较和偏好投票后，模型的评分都会更新。如果用户更偏好当前模型而非一个高排名模型，当前模型会获得相对较大的评分更新，在排行榜上升得更高。反之，如果当前模型战胜了一个低排名模型，其评分只会有小幅增加。（如果当前模型落败，更新方式类似，只是减去而非加上排名分数。）
+
+以下代码清单展示了将这些成对排名转换为排行榜的代码。
+
+\begin{codeboxt}{代码清单 F.4 构建排行榜}
+def elo_ratings(vote_pairs, k_factor=32, initial_rating=1000):
+    ratings = {  #1
+        model: initial_rating
+        for pair in vote_pairs
+        for model in pair
+    }
+
+    for winner, loser in vote_pairs:  #2
+
+        expected_winner = 1.0 / (  #3
+            1.0 + 10 ** ((ratings[loser] - ratings[winner]) / 400.0)
+        )
+
+        ratings[winner] = (  #4
+            ratings[winner] + k_factor * (1 - expected_winner)
+        )
+        ratings[loser] = (
+            ratings[loser] + k_factor * (0 - (1 - expected_winner))
+        )
+
+    return ratings
+\end{codeboxt}
+{\noindent\small\textit{\#1 用相同的基础评分初始化所有模型。 \newline \#2 在每场比赛后更新评分。 \newline \#3 给定评分时，当前获胜方的期望得分 \newline \#4 k\_factor 决定评分更新的敏感度。}\par}
+
+代码清单 F.4 中的 \texttt{elo\_ratings} 函数以 \texttt{votes} 为输入，并将其转换成排行榜，如下所示：
+
+\begin{codebox}
+ratings = elo_ratings(votes, k_factor=32, initial_rating=1000)
+for model in sorted(ratings, key=ratings.get, reverse=True):
+    print(f"{model:8s} : {ratings[model]:.1f}")
+\end{codebox}
+
+这会得到如下排行榜排名，分数越高越好：
+
+\begin{codebox}
+GPT-5    : 1043.7
+Claude-3 : 1015.2
+Llama-4  : 1000.7
+Llama-3  : 940.4
+\end{codebox}
+
+那么这是如何工作的呢？对于每一对，我们用以下公式计算获胜方的期望得分：
+
+\begin{codebox}
+expected_winner = 1 / (1 + 10 ** ((rating_loser - rating_winner) / 400))
+\end{codebox}
+
+\texttt{expected\_winner} 的值是基于当前评分，模型在无平局设置下的预测获胜概率。它决定了评分更新的幅度有多大。
+
+每个模型都从 \texttt{initial\_rating = 1000} 开始。如果获胜方与失败方的评分相等，则 \texttt{expected\_winner = 0.5}，表示双方势均力敌。在这种情况下，更新如下：
+
+\begin{codebox}
+rating_winner + k_factor * (1 - 0.5) = rating_winner + 16
+rating_loser  + k_factor * (0 - (1 - 0.5)) = rating_loser - 16
+\end{codebox}
+
+如果一个明显占优的一方（评分高的模型）获胜，则 \texttt{expected\_winner ≈ 1}。占优方只获得很小的增量，失败方也只损失一点点：
+
+\begin{codebox}
+rating_winner + 32 * (1 - 0.99) = rating_winner + 0.32
+rating_loser  + 32 * (0 - (1 - 0.99)) = rating_loser - 0.32
+\end{codebox}
+
+但如果处于劣势的一方（评分低的模型）获胜，则 \texttt{expected\_winner ≈ 0}，获胜方几乎能拿到全部的 \texttt{k\_factor} 分数，而失败方大约损失同样多的分数：
+
+\begin{codebox}
+rating_winner + 32 * (1 - 0.01) = rating_winner + 31.68
+rating_loser  + 32 * (0 - (1 - 0.01)) = rating_loser - 31.68
+\end{codebox}
+
+\begin{mySidebar}{顺序很重要}
+
+Elo 方法在每场比赛（模型比较）后都更新评分，因此后来的结果会建立在已经更新过的评分之上。这意味着同一组结果，如果以不同的顺序呈现，最终可能会得到略有不同的分数。这种影响通常较轻，但它确实会发生，尤其是当爆冷发生在较早而非较晚的时候。
+
+为了减小这种顺序效应，我们可以打乱 \texttt{votes} 中的配对，多次运行 \texttt{elo\_ratings} 函数，并对得到的评分取平均。
+
+\end{mySidebar}
+
+像这里描述的这类排行榜方法，相比静态的基准测试分数，能更动态地反映模型质量。但结果可能受到用户人口统计特征、提示选择和投票偏差的影响。基准测试和排行榜也可能被人为操纵，用户还可能根据风格而非正确性来选择回复。最后，与自动化的基准测试框架相比，排行榜无法对刚开发出的变体提供即时反馈，这使得它们在模型实际开发过程中更难使用。
+
+\begin{mySidebar}{其他排名方法}
+
+Arena 最初使用本节所述的 Elo 方法，但最近已转向基于 Bradley–Terry 模型的统计方法。Bradley–Terry 模型的主要优势在于，由于它有统计学基础，因此可以构建置信区间来表达排名中的不确定性。与 Elo 评分不同，Bradley–Terry 模型还通过对整个数据集进行统计拟合来联合估计所有评分，因此不受顺序效应的影响。
+
+为了让报告的分数保持在熟悉的范围内，Bradley–Terry 模型经过拟合，以产生与 Elo 可比的数值。尽管该排行榜已不再正式使用 Elo 评分，但 LLM 研究者和从业者在比较模型时仍广泛使用 “Elo” 这一术语。展示 Elo 评分的代码示例收录在本书的附加材料中，地址为 \href{https://github.com/rasbt/reasoning-from-scratch/tree/main/chF/03\_leaderboards}{https://github.com/rasbt/reasoning-from-scratch/tree/main/chF/03\_leaderboards}。
+
+\end{mySidebar}
+
+\section{用其他 LLM 评判回复}
+
+在早期，LLM 是使用统计方法和基于启发式的方法来评估的，其中包括一种名为 \emph{BLEU} 的指标，它以粗略的方式衡量生成文本与参考文本的匹配程度。这类指标的问题在于，它们要求精确的词匹配，无法考虑同义词、词语替换等情况。
+
+如果想从整体上评判书面的答案文本，解决这一问题的一种方法是使用相对排名和基于排行榜的方法，正如上一节所讨论的。但排行榜的一个缺点是，基于偏好的比较具有主观性，因为它们涉及人类反馈，而且收集这些反馈也面临挑战。
+
+一种相关的方法是使用另一个 LLM，配合预定义的评分\emph{量规}（rubric，即评估指南），将某个 LLM 的回复与参考回复比较，并据此评判回复质量，如图 F.6 所示。
+
+\myGraphic{0.92}{images/APPF_F06_Raschka2.png}{图 F.6 LLM 评委评估示例。待评估的模型生成一个答案，然后由一个独立的评委 LLM 根据量规和所提供的参考答案对该答案进行评分。}
+
+在实践中，图 F.6 所示的基于评委的方法在评委 LLM 足够强时效果良好。常见的做法是通过 API 使用领先的专有 LLM，不过也存在专门的评委模型（参考文献见附录 A）。评委之所以效果如此好，一个原因是对答案进行评估往往比生成答案更容易。
+
+要在 Python 中以编程方式实现基于评委的模型评估，我们可以加载一个 Qwen3 模型（在附录 D 中讨论），并向其提供评分量规和待评估的模型答案作为提示。或者，我们也可以通过 API 使用其他 LLM，例如 ChatGPT 或 Ollama API。
+
+在本节的剩余部分，我们将用 Python 通过 Ollama API 实现图 F.6 所示的基于评委的评估。具体来说，我们将使用 OpenAI 的 200 亿参数 gpt-oss 开放权重模型，因为它在能力与效率之间取得了良好的平衡。有关 gpt-oss 的更多信息，请参阅我在 \href{https://magazine.sebastianraschka.com/p/from-gpt-2-to-gpt-oss-analyzing-the}{https://magazine.sebastianraschka.com/p/from-gpt-2-to-gpt-oss-analyzing-the} 上发表的文章《From GPT-2 to gpt-oss: Analyzing the Architectural Advances》。
+
+\subsection{在 Ollama 中实现 LLM 作为评委的方法}
+
+Ollama（\href{https://ollama.com}{https://ollama.com}）是一个高效的、用于在笔记本电脑上运行 LLM 的开源应用。它是对开源库 llama.cpp（\href{https://github.com/ggerganov/llama.cpp}{https://github.com/ggerganov/llama.cpp}）的封装，后者用纯 C/C++ 实现 LLM，以达到最高效率。不过，Ollama 只是用 LLM 生成文本（推理）的工具；它不支持训练或微调 LLM。
+
+要运行以下代码，请访问 \href{https://ollama.com}{https://ollama.com} 安装 Ollama，并按照针对所用操作系统的说明操作：
+
+\begin{itemize}
+\item macOS 和 Windows 用户：打开下载好的 Ollama 应用。如果提示安装命令行支持，请选择 “Yes”。
+\item Linux 用户：使用 Ollama 网站上提供的安装命令。
+\end{itemize}
+
+在实现模型评估代码之前，我们先下载 gpt-oss 模型，并从命令行终端验证 Ollama 是否正常工作。请在命令行中（而不是在 Python 会话中）执行以下命令：
+
+\begin{codebox}
+ollama run gpt-oss:20b
+\end{codebox}
+
+第一次执行该命令时，会自动下载占用 14 GB 存储空间的 200 亿参数 gpt-oss 模型。输出如下：
+
+\begin{codebox}
+$ ollama run gpt-oss:20b
+pulling manifest
+pulling b112e727c6f1: 100% ▕██████████████████████▏  13 GB
+pulling fa6710a93d78: 100% ▕██████████████████████▏ 7.2 KB
+pulling f60356777647: 100% ▕██████████████████████▏  11 KB
+pulling d8ba2f9a17b3: 100% ▕██████████████████████▏   18 B
+pulling 55c108d8e936: 100% ▕██████████████████████▏  489 B
+verifying sha256 digest
+writing manifest
+removing unused layers
+success
+\end{codebox}
+
+\begin{mySidebar}{备选的 Ollama 模型}
+
+请注意，\texttt{ollama} \texttt{run} \texttt{gpt-oss:20b} 命令中的 \texttt{gpt-oss:20b} 指的是 200 亿参数的 gpt-oss 模型。使用 Ollama 配合 \texttt{gpt-oss:20b} 模型大约需要 13 GB 的内存。如果机器的内存不够，可以尝试更小的模型，例如通过 \texttt{ollama} \texttt{run qwen3:4b} 使用 40 亿参数的 \texttt{qwen3:4b} 模型，它只需要约 4 GB 的内存。
+
+对于性能更强的计算机，还可以通过把 \texttt{gpt-oss:20b} 替换为 \texttt{gpt-oss:120b} 来使用更大的 1200 亿参数 gpt-oss 模型。但请记住，这个模型需要多得多的计算资源。
+
+\end{mySidebar}
+
+模型下载完成后，会出现一个命令行界面，可用于与模型交互。例如，试着问模型 \texttt{"}\texttt{What is 1+2?}\texttt{"}：可以使用输入 \texttt{/bye} 结束这个 Ollama 会话。
+
+\begin{codebox}
+>>> What is 1+2?
+Thinking...
+User asks: "What is 1+2?" This is simple: answer 3. Provide explanation? Possibly ask for simple
+arithmetic. Provide answer: 3.
+...done thinking.
+
+1 + 2 = **3**
+\end{codebox}
+
+在本节的剩余部分，我们将使用 Ollama API。这种方法要求 Ollama 在后台运行。有三种方式可以做到这一点：
+
+\begin{itemize}
+\item 在终端中运行 \texttt{ollama} \texttt{serve} 命令（推荐）。这会把 Ollama 后端作为服务器运行，通常位于 \texttt{http: //localhost: 11434}。请注意，只有在通过 API 调用（本节稍后会介绍）时它才会加载模型。
+\item 像前面那样运行 \texttt{ollama} \texttt{run} \texttt{gpt-oss:20b} 命令，但保持其处于打开状态，不要通过 \texttt{/bye} 退出会话。如前所述，这会打开一个围绕本地 Ollama 服务器的最小便捷封装。在幕后，它使用的是与 \texttt{ollama} \texttt{serve} 相同的服务器 API。
+\item 打开 Ollama 桌面应用即可自动运行同一后端，它在此之上提供了图形界面，如前面的图 F.6 所示。
+\end{itemize}
+
+\begin{mySidebar}{Ollama 服务器的 IP 地址}
+
+Ollama 通过启动一个类似本地服务器的进程在机器上本地运行。当在终端中运行 \texttt{ollama serve} 时，可能会遇到一条错误消息：\texttt{Error: listen} \texttt{tcp 127.0.0.1:11434: bind: address already in use}。
+
+如果是这样，可以尝试使用命令 \texttt{OLLAMA\_HOST=127.0.0.1:11435} \texttt{ollama serve}（如果这个地址也被占用，就把数字依次加一，直到找到一个未被占用的地址）。
+
+\end{mySidebar}
+
+以下代码用于验证 Ollama 会话是否正常运行。
+
+\begin{codeboxt}{代码清单 F.5 检查 Ollama 是否正在运行}
+import psutil
+
+def check_if_running(process_name):
+    running = False
+    for proc in psutil.process_iter(["name"]):
+        if process_name in proc.info["name"]:
+            running = True
+            break
+    return running
+
+ollama_running = check_if_running("ollama")
+
+if not ollama_running:
+    raise RuntimeError(
+        "Ollama not running. Launch ollama before proceeding."
+    )
+
+print("Ollama running:", check_if_running("ollama"))
+\end{codeboxt}
+
+确保执行前面代码的输出显示 \texttt{Ollama} \texttt{running: True}。如果显示 \texttt{False}，请确认 \texttt{ollama} \texttt{serve} 命令或 Ollama 应用正在运行。
+
+在本附录的剩余部分，我们将用 Python 通过 Ollama REST API 与本地 gpt-oss 模型交互。下面的 \texttt{query\_model} 函数展示了如何使用该 API。
+
+\begin{codeboxt}{代码清单 F.6 查询本地 Ollama 模型}
+import json
+import requests
+
+def query_model(
+    prompt,
+    model="gpt-oss:20b",
+    url="http://localhost:11434/api/chat"  #1
+):
+    data = {  #2
+        "model": model,
+        "messages": [
+            {"role": "user", "content": prompt}
+        ],
+        "options": {  #3
+            "seed": 123,
+            "temperature": 0,
+            "num_ctx": 2048
+        }
+    }
+
+    with requests.post(url, json=data, stream=True, timeout=30) as r:  #4
+        r.raise_for_status()  #5
+        response_data = ""
+        for line in r.iter_lines(decode_unicode=True):  #6
+            if not line:
+                continue
+            response_json = json.loads(line)  #7
+            if "message" in response_json:  #8
+                response_data += response_json["message"]["content"]
+
+    return response_data
+
+    return response_data
+\end{codeboxt}
+{\noindent\small\textit{\#1 如果使用了 OLLAMA\_HOST=127.0.0.1:11435 ollama serve，请更新该地址。 \newline \#2 以字典的形式创建数据负载。 \newline \#3 确定性回复所需的设置 \newline \#4 发送带有 JSON 负载的 POST 请求，并打开流式响应。 \newline \#5 如果服务器响应表明失败，则抛出错误。 \newline \#6 遍历响应中流式返回的每一行。 \newline \#7 将每一行解析为 JSON 格式。 \newline \#8 从响应中提取并累积消息内容。}\par}
+
+下面是一个示例，展示如何使用代码清单 F.6 中的 \texttt{query\_model} 函数：
+
+\begin{codebox}
+ollama_model = "gpt-oss:20b"
+result = query_model("What is 1+2?", ollama_model)
+print(result)
+\end{codebox}
+
+得到的响应是 \texttt{"}\texttt{3}\texttt{"}。（由于默认设置不同，它与运行 \texttt{ollama} \texttt{run} 或 Ollama 应用得到的结果有所不同。）
+
+\subsection{使用评分量规评估回复}
+
+借助 \texttt{query\_model} 函数，我们可以用一个包含评分量规的提示来评估模型生成的回复，该量规要求 gpt-oss 模型以正确答案为参照，按 1 到 5 的等级对目标模型的回复评分。我们使用的提示如以下代码清单所示。
+
+\begin{codeboxt}{代码清单 F.7 设置包含评分量规的提示模板}
+def rubric_prompt(instruction, reference_answer, model_answer):
+    rubric = (
+        "You are a fair judge assistant. You will be given an instruction, "
+        "a reference answer, and a candidate answer to evaluate, according "
+        "to the following rubric:\n\n"
+        "1: The response fails to address the instruction, providing "
+        "irrelevant, incorrect, or excessively verbose content.\n"
+        "2: The response partially addresses the instruction but contains "
+        "major errors, omissions, or irrelevant details.\n"
+        "3: The response addresses the instruction to some degree but is "
+        "incomplete, partially correct, or unclear in places.\n"
+        "4: The response mostly adheres to the instruction, with only "
+        "minor errors, omissions, or lack of clarity.\n"
+        "5: The response fully adheres to the instruction, providing a "
+        "clear, accurate, and relevant answer in a concise and efficient "
+        "manner.\n\n"
+        "Now here is the instruction, the reference answer, and the "
+        "response.\n"
+    )
+
+    prompt = (
+        f"{rubric}\n"
+        f"Instruction:\n{instruction}\n\n"
+        f"Reference Answer:\n{reference_answer}\n\n"
+        f"Answer:\n{model_answer}\n\n"
+        f"Evaluation: "
+    )
+    return prompt
+\end{codeboxt}
+
+\texttt{rubric\_prompt} 中的 \texttt{model\_answer} 旨在表示在实践中由我们自己的模型生成的回复。为便于说明，这里我硬编码了一个看起来合理的模型答案，而不是动态生成它。不妨使用我们在 F.2.1 节加载的 Qwen3 模型来生成一个真实的 \texttt{model\_answer}。
+
+接下来，我们为 Ollama 模型生成渲染后的提示：
+
+\begin{codebox}
+rendered_prompt = rubric_prompt(
+    instruction=(
+        "If all birds can fly, and a penguin is a bird, "
+        "can a penguin fly?"
+    ),
+    reference_answer=(
+        "Yes, according to the premise that all birds can fly, "
+        "a penguin can fly."
+    ),
+    model_answer=(
+        "Yes - under those premises a penguin would be able to fly."
+    )
+)
+print(rendered_prompt)
+\end{codebox}
+
+输出如下：
+
+\begin{codebox}
+You are a fair judge assistant. You will be given an instruction, a
+reference answer, and a candidate answer to evaluate, according to the
+following rubric:
+
+1: The response fails to address the instruction, providing irrelevant,
+incorrect, or excessively verbose content.
+2: The response partially addresses the instruction but contains major
+errors, omissions, or irrelevant details.
+3: The response addresses the instruction to some degree but is
+incomplete, partially correct, or unclear in places.
+4: The response mostly adheres to the instruction, with only minor
+errors, omissions, or lack of clarity.
+5: The response fully adheres to the instruction, providing a clear,
+accurate, and relevant answer in a concise and efficient manner.
+
+Now here is the instruction, the reference answer, and the response.
+
+Instruction:
+If all birds can fly, and a penguin is a bird, can a penguin fly?
+
+Reference Answer:
+Yes, according to the premise that all birds can fly, a penguin can
+fly.
+
+Answer:
+Yes - under those premises a penguin would be able to fly.
+
+Evaluation:
+\end{codebox}
+
+用 \texttt{"}\texttt{Evaluation: }\texttt{"} 作为提示的结尾，会促使模型生成答案。我们来看看 gpt-oss:20b 模型如何评判该回复：
+
+\begin{codebox}
+result = query_model(rendered_prompt, ollama_model)
+print(result)
+\end{codebox}
+
+回复如下：
+
+\begin{codebox}
+**Score: 5**
+
+The candidate answer directly addresses the question, correctly applies the given premises, and concisely states that a penguin would be able to fly. It is accurate, relevant, and clear.
+\end{codebox}
+
+可以看到，该答案获得了最高分，这是合理的，因为它确实是正确的。
+
+这是一个手动逐步走完流程的简单示例。我们可以进一步扩展这一思路，实现一个 \texttt{for} 循环，用评估数据集中的问题迭代地查询模型（例如第 2 章中我们在 F.2.1 节加载的 Qwen3 模型），通过 gpt-oss 对它进行评估，并计算平均分。对两个模型（例如 Qwen3 的基础模型和推理模型）都这样做，就可以相互比较这两个模型。
+
+\begin{mySidebar}{使用过程奖励模型对中间推理步骤评分}
+
+除了符号验证器和 LLM 评委之外，还有一类被称为\emph{过程奖励模型}（process reward model, PRM）的学习型模型。与评委一样，PRM 可以评估最终答案之外的推理过程，但与通用评委不同的是，它们专门关注推理的中间步骤。验证器以符号方式检查正确性，且通常只在结果层面进行，而 PRM 则在强化学习训练过程中提供逐步的奖励信号。我们可以把 PRM 归类为 “步骤级评委”，它们主要是为训练而非纯评估而开发的。（在实践中，PRM 很难在大规模上可靠地训练。例如，DeepSeek R1 就没有采用 PRM，而是结合验证器进行推理训练。）
+
+\end{mySidebar}
+
+基于评委的评估相比基于偏好的排行榜具有优势，包括可扩展性和一致性，因为它们不依赖大量的人类投票者。不过，虽然排行榜通常基于人类偏好排名，但从技术上讲，也可以把这些排行榜背后的基于偏好的评分外包给 LLM。无论采用哪种方式，LLM 评委都与人类投票者有着相同的弱点：结果可能因模型偏好、提示设计和答案风格而产生偏差。此外，它们还强烈依赖评委模型和评分量规的选择，并且缺乏固定基准测试所具有的可复现性。

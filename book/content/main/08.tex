@@ -1,0 +1,1065 @@
+\mySmallsection{本章涵盖}
+\begin{itemize}
+\item 推理模型的硬蒸馏与软蒸馏
+\item 创建并准备教师生成的推理数据集
+\item 使用交叉熵损失训练和评估蒸馏后的学生模型
+\end{itemize}
+
+推理能力的提升不仅可以通过推理时扩展和强化学习实现，还可以借助\emph{蒸馏}。在蒸馏中，我们用一个较小的学生模型，去学习一个较大教师模型所生成的推理轨迹和答案。如图 8.1 的概览所示，本章关注的就是这种训练时技术。
+
+\myGraphic{0.92}{images/CH08_F01_Raschka2.png}{图 8.1 本书所涵盖主题的模型。本章关注蒸馏，即用一个较小的学生模型去学习较大教师模型生成的推理轨迹。}
+
+我们会先总体介绍模型蒸馏，然后再讨论其中的各个步骤。
+
+\section{为推理任务引入模型蒸馏}
+
+模型蒸馏是指用一个较大的 LLM（\emph{教师}）产生的输出，去训练一个较小的 LLM（\emph{学生}）。对于推理模型而言，这些输出通常不仅包含最终答案，还包含通向该答案的中间推理轨迹。
+
+蒸馏之所以重要，是因为最强的推理模型往往过于庞大、成本过高，难以直接使用。例如，DeepSeek-R1 拥有 6710 亿个参数。这种规模的系统开发和部署成本都很高，远远超出了大多数从业者能在本地硬件上运行的范围。DeepSeek-R1 背后的团队通过蒸馏这个 6710 亿参数的教师模型，创建了更小的模型变体。本章将遵循同样的基本思路，只是把规模控制在本书可实际操作的范围内。
+
+在本书中，我们一直有意使用小模型，而不是从零训练一个超大 LLM，但本章的工作流程与更大模型完全相同。我们会用一个更强的教师模型来生成推理轨迹，然后训练一个较小的学生模型去复现它们。在我们的设定中，这一蒸馏阶段所花的时间只是更大模型的一小部分。我们的蒸馏训练在 DGX Spark 上大约需要 3 小时、占用约 15 GB 内存，而第 6 章中哪怕只跑几轮组相对策略优化（GRPO），在同一硬件上也要花约 12 小时、占用 70 GB 内存。
+
+相比使用可验证奖励的强化学习（RLVR）来训练小模型，蒸馏有时也更有效。例如，DeepSeek-R1 论文报告称，其较小的蒸馏变体表现优于仅用强化学习训练的同类模型。在那套设定中，拥有 6710 亿参数的最大 DeepSeek-R1 模型充当教师，负责生成用于训练更小学生模型的监督信号。
+
+蒸馏主要有两种类型：\emph{硬}蒸馏和\emph{软}蒸馏。在硬蒸馏中，学生模型学习教师模型生成的文本，也就是把教师的词元当作目标。在软蒸馏中，学生模型通过最小化 \emph{KL 散度}来匹配教师在整个词表上的概率分布；KL 散度衡量两个概率分布之间的差异程度。这两种方法如图 8.2 所示。
+
+\myGraphic{0.92}{images/CH08_F02_Raschka2.png}{图 8.2 硬蒸馏用教师生成的词元训练学生模型；软蒸馏则用教师的完整输出分布训练学生模型。}
+
+如图 8.2 所示，一种选择是纯硬蒸馏。此时我们只把教师生成的文本作为训练目标。如果你熟悉典型的 LLM 训练流程（我在上一本书\emph{《从零构建大语言模型》}中有更详细的介绍），就会知道硬蒸馏不过是在合成数据上做监督微调。较小的 DeepSeek-R1 蒸馏模型采用的也是这种设定。大教师模型生成推理轨迹和答案，学生模型通过微调来复现它们。根据 DeepSeek-R1 论文，对于小模型而言，这种蒸馏方法可以比用强化学习训练获得更高的准确率。硬蒸馏在实践中的主要优势在于，我们只需要访问教师生成的文本，而不需要它的 logits。
+
+第二种选择是纯软蒸馏。学生模型不再只匹配教师所选中的词元，而是学习匹配教师每个词元在整个词表上的完整输出分布。这让学模型能获得更丰富的信息，了解教师还认为哪些候选词元是合理的，但它在训练时需要访问教师的 logits 或对数概率。
+
+第三种选择是把硬蒸馏和软蒸馏结合起来。这就是早期在计算机视觉领域推广开来的经典知识蒸馏设定，例如杰弗里·辛顿（Geoffrey Hinton）、奥里奥尔·维尼亚尔斯（Oriol Vinyals）和杰夫·迪恩（Jeff Dean）的论文“Distilling the Knowledge in a Neural Network”。在这种情况下，我们一边用教师的实际输出词元进行训练，一边鼓励学生模型去匹配教师的完整分布。
+
+在实践中，硬蒸馏在 LLM 中要常见得多，部分原因是教师的完整 logits 通常无法获取。像 ChatGPT 或 Claude 这样的专有系统可能会输出生成的文本，但一般不会开放经典软蒸馏所需的完整词表分布。
+
+\begin{myWarning}{警告}
+ 将生成的文本复用于蒸馏可能受到各提供商使用政策的限制，包括 OpenAI 和 Anthropic 的服务条款，因此在把这类输出用于训练之前，请仔细阅读相关条款。\end{myWarning}
+
+即便能拿到 logits，软蒸馏也比硬蒸馏更繁琐。学生模型和教师模型通常需要使用相同的分词器，以便它们的词表分布对齐，因此这种方法在同一模型家族内部更容易实施。此外，对于较长的推理轨迹，存储和使用完整的词元分布也要昂贵得多。相比之下，存储纯文本输出既便宜又简单。
+
+本章将聚焦 DeepSeek-R1 风格的硬蒸馏，因为它对大多数读者来说是更实用的设定。本章要讨论的步骤归纳于图 8.3。
+
+\myGraphic{0.92}{images/CH08_F03_Raschka2.png}{图 8.3 本章分四个主要步骤讲解蒸馏：（1）蒸馏的介绍与概览；（2）数据集准备（步骤 2a-2c）；（3）通过蒸馏进行训练（步骤 3a-3c）；（4）评估。}
+
+有了这一概览，我们就可以从蒸馏背后的高层思路转向实现它所需的具体步骤了。下一节中，我们将先准备蒸馏所需的数据集，它将作为训练学生模型的基础。
+
+\section{为推理蒸馏生成数据集}
+
+硬蒸馏的第一步是创建一个用于训练学生模型的数据集。对我们来说，学生模型就是前面几章中使用过的 Qwen3 0.6B 基座模型。
+
+为了构建数据集，我们将使用 MATH 数据集中与 MATH-500 评估集不重叠的 12,000 道数学题。这与我们在第 6 章和第 7 章中用于 RLVR 的 12,000 道题相同。这一次我们不再对学生模型采样多个回复并计算奖励，而是把这些题喂给一个现成的推理模型 DeepSeek-R1（教师模型），并收集它的回复作为训练目标。这一设定如图 8.4 所示。
+
+\myGraphic{0.92}{images/CH08_F04_Raschka2.png}{图 8.4 本章使用的蒸馏设定。我们用 12,000 道不重叠的 MATH 训练题从 DeepSeek-R1 获取合成解答，之后在独立的 MATH-500 测试集上评估蒸馏后的 Qwen3 学生模型。}
+
+在第 6 章和第 7 章的 RLVR 设定中，我们训练 Qwen3 基座模型生成正确的解答，然后用验证器把模型的最终答案与参考答案进行比较。验证器产生奖励信号。
+
+在蒸馏中，监督信号更为直接。我们不再用奖励函数把学生的答案与参考答案比较，而是如图 8.4 所示，把学生生成的词元与教师生成的词元进行比较。教师的回复成为\emph{目标序列}。它与 RLVR 的对比在图 8.5 中有更详细的展示。
+
+\myGraphic{0.92}{images/CH08_F05_Raschka2.png}{图 8.5 在 RLVR 中，生成的答案与真值参考答案比较（上方子图）；而在蒸馏中，学生的答案与教师生成的解答比较（下方子图）。}
+
+蒸馏的一个实际优势在于，我们可以在训练学生模型之前先生成教师数据集。
+
+为全部 12,000 道数学题生成教师答案可能既费时又耗资源，因此我借助通过 OpenRouter 托管的 6710 亿参数 DeepSeek-R1 模型创建了这个数据集。整个数据生成过程在 API 使用上花费了约 50 美元。我们将直接加载这个预生成的数据集，因此你无需自行生成即可跟着操作。如果你对数据生成过程感兴趣，相关代码和使用说明可在补充材料中找到：\href{https://mng.bz/vZvx}{https://mng.bz/vZvx}。
+
+\section{加载用于蒸馏的 MATH 训练数据集}
+
+现在我们来加载上一节中由 DeepSeek-R1 生成的蒸馏版 MATH 数据集。每个样本都包含一道数学题，以及推理轨迹和最终答案，我们可以把它们作为监督微调的目标。这一步骤在图 8.6 中突出显示。
+
+\myGraphic{0.92}{images/CH08_F06_Raschka2.png}{图 8.6 本节中，我们将从 JSON 文件加载 DeepSeek-R1 生成的数据集，然后再把它准备成可用于训练的形式。}
+
+我把该数据集放在了 Hugging Face Hub 而非 GitHub 上，因为 JSON 文件约 107 MB，超过了 GitHub 100 MB 的文件大小限制：\href{https://huggingface.co/datasets/rasbt/math\_distill}{https://huggingface.co/datasets/rasbt/math\_distill}。下面的辅助函数会在所选分区尚未缓存到本地时下载它，并将其作为 Python 对象返回。
+
+\begin{codeboxt}{代码清单 8.1 加载蒸馏后的 MATH 训练划分}
+import json
+import requests
+from pathlib import Path
+
+def load_distill_data(
+    local_path=None,
+    partition="deepseek-r1-math-train",
+    save_copy=True,
+):
+
+    if local_path is None:
+        local_path = f"{partition}.json"
+    local_path = Path(local_path)
+
+    url = (
+        "https://huggingface.co/datasets/rasbt/math_distill"
+        "/resolve/main/data/"
+        f"{partition}.json"
+    )
+    backup_url = (
+        "https://f001.backblazeb2.com/file/reasoning-from-scratch/"
+        f"MATH/{partition}.json"
+    )
+
+    if local_path.exists(): #1
+        with local_path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        size_kb = local_path.stat().st_size / 1e3
+        print(f"{local_path}: {size_kb:.1f} KB (cached)")
+        return data
+
+    assert partition in (
+        "deepseek-r1-math-train",
+        "deepseek-r1-math500",
+        "qwen3-235b-a22b-math-train",
+        "qwen3-235b-a22b-math500",
+    )
+
+    try:  #2
+        r = requests.get(url, timeout=30)
+        r.raise_for_status()
+    except requests.RequestException:
+        print("Using backup URL.")
+        r = requests.get(backup_url, timeout=30)
+        r.raise_for_status()
+
+    data = r.json()
+
+    if save_copy:  #3
+        with local_path.open("w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+
+        size_kb = local_path.stat().st_size / 1e3
+        print(f"{local_path}: {size_kb:.1f} KB")
+
+    return data
+\end{codeboxt}
+{\noindent\small\textit{\#1 若数据集已下载，则复用缓存副本。 \newline \#2 先尝试从 Hugging Face 下载。 \newline \#3 保存一份本地副本，以便后续运行跳过下载。}\par}
+
+输出如下：
+
+\begin{codebox}
+deepseek-r1-math-train.json: 107538.0 KB
+Dataset size: 12000
+\end{codebox}
+
+我们来查看其中一个训练样本，以便理解数据集的结构，并确切看到教师生成的数据包含哪些字段。为便于说明，我们使用第五个训练样本：
+
+\begin{codebox}
+from pprint import pprint
+pprint(math_train[4])
+\end{codebox}
+
+打印出的输出如下：
+
+\begin{codebox}
+{'gtruth_answer': '6',
+ 'message_content': 'Sam worked \\( x \\) days and did...'
+ 'message_thinking': "Okay, let's see. Sam was hired for 20 days...'
+ 'problem': 'Sam is hired for a 20-day period...'
+}
+\end{codebox}
+
+每个数据集条目都包含数学题本身（\texttt{problem}）、真值答案（\texttt{gtruth\_answer}）、位于 \texttt{message\_thinking} 中的教师推理轨迹，以及位于 \texttt{message\_content} 中的最终答案。对于蒸馏而言，最重要的两个字段是推理轨迹和最终答案，因为它们共同构成了学生模型应当学会复现的目标文本。
+
+下面代码清单中的 \texttt{format\_distilled\_answer} 函数把这两个字段合并成一个训练目标：它把推理轨迹放进 \texttt{\textless{}think\textgreater{}...\textless{}/think\textgreater{}} 标签内，然后追加最终答案。
+
+\begin{codeboxt}{代码清单 8.2 为蒸馏格式化教师回复}
+def format_distilled_answer(entry):
+    content = str(entry["message_content"]).strip()
+    if not content:
+        raise ValueError("Missing non-empty 'message_content' field.")
+
+    thinking = str(entry["message_thinking"]).strip()
+    return f"<think>{thinking}</think>\n\n{content}"
+
+print(format_distilled_answer(math_train[4]))
+\end{codeboxt}
+
+打印输出如下：
+
+\begin{codebox}
+<think>Okay, let's see. Sam was hired for 20 days. Each day he works, he earns $60...So answer is 6 days not worked.</think>
+Sam worked \( x \) days and did not work \( y \) days. We know:...
+Sam did not work \(\boxed{6}\) days.
+\end{codebox}
+
+如上一章所讨论的，\texttt{\textless{}think\textgreater{}\textless{}/think\textgreater{}} 词元是可选的。蒸馏本身并不要求使用它们，不过它们有助于把推理轨迹与最终答案清晰地分开。当我们实现面向终端用户、需要隐藏冗长推理轨迹的用户界面时，这种分隔就显得很有用。有些系统（包括 ChatGPT 等产品）可能只显示最终答案，而隐藏部分内部推理。让模型学会使用显式的 \texttt{\textless{}think\textgreater{}} 标签，可以让这些轨迹更易于解析和处理。
+
+由于数据集中也包含真值标签，我们可以衡量教师模型在这个集合上的准确程度。为方便起见，我们将使用第 3 章补充材料中的 \texttt{evaluate\_json.py} 脚本，它用该章实现的验证器把生成的答案与参考答案进行比较。这会让我们快速估计 DeepSeek-R1 在蒸馏数据集上的表现：
+
+\begin{codebox}
+from reasoning_from_scratch.ch07 import download_from_github
+_ = download_from_github(
+    "ch03/02_math500-verifier-scripts/evaluate_json.py"
+)
+\end{codebox}
+
+通过前面的 Python 代码下载脚本后，我们可以在代码终端中按如下方式运行它：
+
+\begin{codebox}
+uv run evaluate_json.py \
+--json_path "deepseek-r1-math-train.json" \
+--gtruth_answer gtruth_answer \
+--generated_text message_content
+\end{codebox}
+
+（如果你不使用 \texttt{uv}，请把 \texttt{uv run} 替换为 \texttt{python}。）
+
+输出如下：
+
+\begin{codebox}
+Accuracy: 90.6% (10871/12000)
+\end{codebox}
+
+尽管这个模型并非完美，但 90.6\% 仍是一个相当高的准确率。在第 3 章的 MATH-500 测试集上，它达到了 91.2\% 的准确率，远高于我们即将训练的 Qwen3 0.6B 基座模型（在 MATH-500 上 15.2\% 的准确率），也高于官方的 Qwen3 0.6B 推理参考模型（在 MATH-500 上 50.8\%）。
+
+\section{构建训练样本}
+
+接下来，我们要把原始数据集条目转换成模型可以消费的训练样本。从高层看，这意味着统一地格式化提示和答案、对它们进行分词，并把得到的词元 ID 连同提示长度一起存储起来。这一预处理阶段如图 8.7 所示。
+
+\myGraphic{0.92}{images/CH08_F07_Raschka2.png}{图 8.7 通过理解分词器、对样本分词以及过滤和划分数据集，把加载的数据集转换为适合模型训练的格式}
+
+这里的大部分工作都是直接的预处理。在 RLVR 那几章中，我们是在运行时即时做类似准备的，因为每个训练样本只采样一次就被丢弃了。蒸馏则不同，我们通常会在多个\emph{训练轮次}中反复遍历同一批样本。因此，更高效的做法是把数据集格式化并分词一次，保存处理后的样本，并在训练中复用它们。这也是为什么一旦收集好教师数据，蒸馏往往比 RLVR 更容易迭代。
+
+\begin{mySidebar}{什么是训练轮次？}
+
+\emph{训练轮次}（简称\emph{轮次}）是机器学习和深度学习中的一个标准术语。一个轮次就是对整个训练数据集的一次完整遍历。例如，如果我们训练三个轮次，模型就会看到每个训练样本三次，而且通常每次的顺序都不同。多个轮次通过反复访问同一批数据，帮助模型逐步改进。
+
+\end{mySidebar}
+
+\subsection{加载并理解分词器}
+
+我们先从分词器开始。这里我们使用 Qwen3 推理分词器，因为它支持第 7 章引入的 \texttt{\textless{}think\textgreater{}...\textless{}/think\textgreater{}} 词元。
+
+\begin{codeboxt}{代码清单 8.3 加载 Qwen3 推理分词器}
+from reasoning_from_scratch.qwen3 import (
+    download_qwen3_small,
+    Qwen3Tokenizer,
+)
+
+def load_reasoning_tokenizer(local_dir="qwen3"):
+    download_qwen3_small(
+        kind="reasoning", tokenizer_only=True, out_dir=local_dir
+    )
+
+    tokenizer_path = Path(local_dir) / "tokenizer-reasoning.json"
+    tokenizer = Qwen3Tokenizer(
+        tokenizer_file_path=tokenizer_path,
+        apply_chat_template=True,
+        add_generation_prompt=True,
+        add_thinking=True,
+    )
+
+    return tokenizer
+
+tokenizer = load_reasoning_tokenizer()
+\end{codeboxt}
+
+我们设置 \texttt{apply\_chat\_template=True} 和 \texttt{add\_generation\_prompt=True}，让分词器采用与 Qwen3 聊天和推理模型相同的提示格式化风格。下面的例子展示了自动插入的额外包装词元。
+
+\begin{codebox}
+prompt = "Sam is hired for a 20-day period..."
+prompt_ids = tokenizer.encode(prompt)
+decoded_prompt = tokenizer.decode(prompt_ids)
+print(decoded_prompt)
+\end{codebox}
+
+格式化后的文本如下：
+
+\begin{codebox}
+<|im_start|>user
+Sam is hired for a 20-day period...<|im_end|>
+<|im_start|>assistant
+\end{codebox}
+
+\texttt{\textless{}|im\_start|\textgreater{}user} 标记用户提示的开始，\texttt{\textless{}|im\_end|\textgreater{}} 标记提示的结束，而 \texttt{\textless{}|im\_start|\textgreater{}assistant} 标记模型回复的开始。这种聊天式包装是可选的，但它是指令微调和聊天微调中的常见约定。
+
+对于目标答案，我们通过设置 \texttt{chat\_wrapped=False} 来禁用这种包装。否则，提示和答案都会各自引入 assistant 起始词元，而这不是我们在把它们拼接成单个训练序列时想要的：
+
+\begin{codebox}
+answer = (
+    "<think>Okay, let me try to solve "
+    "this problem...</think> \\boxed{4}"
+)
+answer_ids = tokenizer.encode(answer, chat_wrapped=False)
+decoded_answer = tokenizer.decode(answer_ids)
+print(decoded_answer)
+\end{codebox}
+
+如所示，\texttt{chat\_wrapped=False} 设置抑制了答案词元的聊天模板：
+
+\begin{codebox}
+<think>Okay, let me try to solve this problem...</think> \boxed{4}
+\end{codebox}
+
+训练时，我们需要完整的词元 ID 序列：经过包装的提示，接着是教师答案，最后是一个序列结束词元。这就是模型在下一词元预测时会看到的序列：
+
+\begin{codebox}
+token_ids = prompt_ids + answer_ids + [tokenizer.eos_token_id]
+decoded_token_ids = tokenizer.decode(token_ids)
+print(decoded_token_ids)
+\end{codebox}
+
+格式化后的字符串如下：
+
+\begin{codebox}
+<|im_start|>user
+Sam is hired for a 20-day period...<|im_end|>
+<|im_start|>assistant
+<think>Okay, let me try to solve this problem...</think>\boxed{4}<|im_end|>
+\end{codebox}
+
+值得强调的是，推理分词器之所以方便，主要是因为它已经包含了 \texttt{\textless{}think\textgreater{}\textless{}/think\textgreater{}} 词元。不过从原理上讲，我们也可以使用基座分词器。同样，聊天模板也并非严格必需。我们在这里保留它，是因为它与 Qwen3 自身推理模型使用的格式一致，并有助于保持训练和评估设定的一致性。
+
+如果之后你用前面几章的脚本评估该模型，记得使用 \texttt{--which\_model} \texttt{"}\texttt{reasoning}\texttt{"} 设置，以便评估使用相同的分词器变体。
+
+\subsection{格式化并分词数据集}
+
+分词器已经加载好了，现在我们可以把格式化和分词步骤应用到整个数据集，如图 8.8 所示。
+
+\myGraphic{0.92}{images/CH08_F08_Raschka2.png}{图 8.8 分词完成后，我们现在可以把格式化和分词步骤应用到整个数据集。}
+
+分词器就绪后，我们现在可以通过 \texttt{build\_examples} 函数把格式化和分词步骤一致地应用到整个数据集。单个训练样本的完整格式化和分词流程如图 8.9 所示。
+
+\myGraphic{0.92}{images/CH08_F09_Raschka2.png}{图 8.9 单个训练样本的分词流程示例。数学题被渲染成聊天提示格式，教师的推理轨迹和最终答案通过 \texttt{format\_distilled\_answer} 合并，然后两部分拼接成一个词元序列。}
+
+这里，\texttt{build\_examples} 函数执行三个步骤。第一步，渲染并分词提示。第二步，格式化并分词教师答案。第三步，拼接两部分并记录提示长度，以便之后只在答案词元上计算损失。下面的代码清单展示了如何在代码中实现这一点。
+
+\begin{codeboxt}{代码清单 8.4 构建并检查分词后的蒸馏样本}
+from reasoning_from_scratch.ch03 import render_prompt
+
+def build_examples(data, tokenizer):
+    examples = []
+    skipped = 0
+
+    for entry in data:
+        try:
+
+            prompt = render_prompt(entry["problem"])#1
+            prompt_ids = tokenizer.encode(prompt) #1
+
+            target_answer = format_distilled_answer(entry)#2
+            answer_ids = tokenizer.encode( #2
+                target_answer, chat_wrapped=False #2
+            ) #2
+
+            token_ids = (#3
+                prompt_ids + answer_ids + [tokenizer.eos_token_id] #3
+            ) #3
+
+            if len(token_ids) < 2:
+                skipped += 1
+                continue
+
+            examples.append({#4
+                "token_ids": token_ids, #4
+                "prompt_len": len(prompt_ids), #4
+            }) #4
+        except (KeyError, TypeError, ValueError):
+
+            skipped += 1#5
+ #5
+    return examples, skipped #5
+ #5
+ #5
+examples, skipped = build_examples(math_train, tokenizer) #5
+ #5
+print("Number of examples:", len(examples)) #5
+print("Number of skipped examples:", skipped) #5
+\end{codeboxt}
+{\noindent\small\textit{\#1 步骤 1：把题目渲染成聊天格式 \newline \#2 步骤 2：对教师的推理轨迹和最终答案分词 \newline \#3 步骤 3：把提示和答案合并用于训练 \newline \#4 保存提示长度，以便之后在损失中忽略提示词元。 \newline \#5 跳过格式错误的样本。}\par}
+
+运行代码清单 8.4 中的代码后，得到的数字如下：
+
+\begin{codebox}
+Number of examples: 12000
+Number of skipped examples: 0
+\end{codebox}
+
+接下来，我们解码其中一个训练样本以便进一步检查：
+
+\begin{codebox}
+print(tokenizer.decode(examples[4]["token_ids"]))
+\end{codebox}
+
+输出如下：
+
+\begin{codebox}
+<|im_start|>user
+You are a helpful math assistant.
+Answer the question and write the final result on a new line as:
+\boxed{ANSWER}
+
+Question:
+Sam is hired for a 20-day period...
+
+Answer:<|im_end|>
+<|im_start|>assistant
+<think>Okay, let's see. Sam was hired for 20 days.... So answer is 6 days not worked.</think>
+...Sam did not work \(\boxed{6}\) days.<|im_end|>
+\end{codebox}
+
+从上面的输出可以看出，它满足所有格式要求。例如，它正确地使用了聊天模板，答案的推理轨迹也被正确地包裹在 \texttt{\textless{}think\textgreater{}\textless{}/think\textgreater{}} 标签中。最后，答案以一个序列结束词元 \texttt{\textless{}|im\_end|\textgreater{}} 结尾。
+
+\subsection{过滤并划分数据集}
+
+样本分词完成后，我们还需要过滤长序列，并把数据集划分为\emph{训练}和\emph{验证}子集。这一步骤在图 8.10 中突出显示。
+
+\myGraphic{0.92}{images/CH08_F10_Raschka2.png}{图 8.10 分词之后，我们过滤掉长序列，并把剩余的样本划分为训练和验证子集。}
+
+分词之后，检查序列长度很有用。它能告诉我们样本平均有多长、哪些样本是极端的离群值，以及我们的过滤需要多激进。随后我们可以移除超过所选最大长度的样本，用固定随机种子打乱剩余数据，并分出一小部分作为验证集。
+
+我们先来分析序列长度。
+
+\begin{codeboxt}{代码清单 8.5 计算长度并过滤长样本}
+def compute_length(examples, answer_only=False):
+    lengths = []
+    for ex in examples:
+        total = len(ex["token_ids"])
+        length = total - ex["prompt_len"] if answer_only else total
+        lengths.append(length)
+
+    avg_len = round(sum(lengths) / len(lengths))
+
+    shortest_len = min(lengths)
+    longest_len = max(lengths)
+    shortest_idx = lengths.index(shortest_len)
+    longest_idx = lengths.index(longest_len)
+
+    print(f"Average: {avg_len} tokens")
+    print(f"Shortest: {shortest_len} tokens (index {shortest_idx})")
+    print(f"Longest: {longest_len} tokens (index {longest_idx})")
+
+compute_length(examples)
+\end{codeboxt}
+
+得到的输出如下：
+
+\begin{codebox}
+Average: 2946 tokens
+Shortest: 236 tokens (index 10846)
+Longest: 42005 tokens (index 2529)
+\end{codebox}
+
+如你所见，平均回复长度是 2,946 个词元，这对推理模型来说很典型。不过也存在离群值。例如，最长的答案有 42,005 个词元，过于冗长。索引位置（\texttt{index} \texttt{10846} 和 \texttt{index} \texttt{2529}）分别表示数据集中最短和最长的样本所在位置，以便我们想检查它们时使用。
+
+为了让这个蒸馏示例的计算成本保持在合理范围内，我们将使用代码清单 8.6 中的代码把数据集过滤为只包含不超过 2,048 个词元的条目。在实践中，控制序列长度是让蒸馏能够在小硬件上可行的主要步骤之一。
+
+\begin{codeboxt}{代码清单 8.6 过滤长样本}
+def filter_examples_by_max_len(examples, max_len=2048):
+    filtered_examples = [
+        s for s in examples
+        if len(s["token_ids"]) <= max_len
+    ]
+
+    print("Original:", len(examples))
+    print("Filtered:", len(filtered_examples))
+    print("Removed:", len(examples) - len(filtered_examples))
+
+    return filtered_examples
+
+filtered_examples = filter_examples_by_max_len(examples, max_len=2048)
+\end{codeboxt}
+
+代码清单 8.6 中的过滤代码移除了 5,305 个训练样本：
+
+\begin{codebox}
+Original: 12000
+Filtered: 6695
+Removed: 5305
+\end{codebox}
+
+我们来计算这个新子集的序列长度：
+
+\begin{codebox}
+compute_length(filtered_examples)
+\end{codebox}
+
+如你所见，平均词元长度现在降到了 1,180，而且没有任何格式化后的训练样本超过 2,048 个词元：
+
+\begin{codebox}
+Average: 1180 tokens
+Shortest: 236 tokens (index 5971)
+Longest: 2048 tokens (index 5587)
+\end{codebox}
+
+最后，我们把数据集划分为训练集和验证集，其中验证集用于在训练过程中做快速评估。
+
+\begin{codeboxt}{代码清单 8.7 划分为训练集和验证集}
+import random
+
+rng = random.Random(123)
+rng.shuffle(filtered_examples)
+
+train_examples = filtered_examples[25:]
+val_examples = filtered_examples[:25]
+
+print("Number of train examples:", len(train_examples))
+print("Number of validation examples:", len(val_examples))
+\end{codeboxt}
+
+得到的训练样本和验证样本数量如下：
+
+\begin{codebox}
+Number of train examples: 6670
+Number of validation examples: 25
+\end{codebox}
+
+我们有意把验证集保持得很小，以免不必要地拖慢训练循环。此外，训练完成后，我们将使用 MATH-500 中的 500 个样本评估模型的表现。
+
+\begin{mySidebar}{练习 8.1：训练集和验证集的长度}
+
+对新的 \texttt{train\_examples} 和 \texttt{val\_examples} 划分应用 \texttt{compute\_length} 函数，检查它们在样本长度上是否均衡。
+
+\end{mySidebar}
+
+\section{加载预训练模型}
+
+数据集准备完成后，我们就可以转向实际的蒸馏训练了。我们首先加载预训练的 Qwen3 基座模型，如图 8.11 所示。
+
+\myGraphic{0.92}{images/CH08_F11_Raschka2.png}{图 8.11 数据集准备完成后，我们通过加载预训练的 Qwen3 基座模型来开始蒸馏训练。}
+
+我们将从预训练的 Qwen3 基座模型出发，而不是从经过强化学习训练的模型出发，因为这里我们要研究的训练阶段就是蒸馏本身。这能让我们的设定保持干净，也更容易把任何改进归因于蒸馏得到的推理轨迹。它还复刻了一种常见的实践设定：用教师生成的数据来适配一个通用基座模型。
+
+\begin{codeboxt}{代码清单 8.8 加载用于蒸馏的 Qwen3 基座模型}
+import torch
+
+from reasoning_from_scratch.ch02 import get_device
+from reasoning_from_scratch.ch03 import (
+    load_model_and_tokenizer,
+)
+
+device = get_device()
+
+model, _ = load_model_and_tokenizer(
+    which_model="base",
+    device=device,
+    use_compile=False,
+)
+\end{codeboxt}
+
+我们可以忽略代码清单 8.8 中加载的基座分词器，因为我们将使用 8.4.1 节加载的、支持 \texttt{\textless{}think\textgreater{}\textless{}/think\textgreater{}} 词元的分词器。
+
+\section{计算训练损失和验证损失}
+
+接下来，我们实现\emph{交叉熵损失}，在之后实现训练循环时，它将作为蒸馏过程中的训练信号。我们还会在验证集上复用同样的计算，以监控训练过程中的进展。
+
+如果你有深度学习背景，可能已经从分类任务中熟悉了交叉熵。这里的思路是一样的，只不过我们在每个位置想要预测的目标类别，是教师生成序列中的下一个词元。
+
+我们可以把交叉熵损失直接与第 5 章和第 6 章中的对数概率计算联系起来。正如那里所讨论的，对数概率衡量模型为正确的下一个词元分配了多少概率。对数概率越高，说明模型对正确词元越有信心；越低则相反。图 8.12 复用了前面几章中“The capital of Germany is Berlin”的例子来回顾这一点。
+
+\myGraphic{0.92}{images/CH08_F12_Raschka2.png}{图 8.12 词元对数概率与序列对数概率的示意。把正确下一个词元的对数概率相加，就得到序列对数概率，它是本章后面使用的交叉熵损失的基础。}
+
+交叉熵就是图 8.12 中各词元对数概率的负平均值。例如，如果对数概率是 –16.6250，那么负对数概率就是 16.6250，负平均对数概率（也就是交叉熵）就是 16.6250/5 = 3.325。注意，这里的 5 是因为该序列有 5 个目标预测的对数概率被平均：\texttt{"}\texttt{capital}\texttt{"}、\texttt{"}\texttt{of}\texttt{"}、\texttt{"}\texttt{Germany}\texttt{"}、\texttt{"}\texttt{is}\texttt{"} 和 \texttt{"}\texttt{Berlin}\texttt{"}。与对数概率类似，交叉熵的值越接近 0 越好，因为这说明模型对正确的目标词元越有信心。
+
+第 6 章中的 \texttt{sequence\_logprob} 函数执行了图 8.12 所示的计算，因此它是理解\emph{蒸馏损失}工作原理的一个有用起点。在这里，我们将使用索引位置为 \texttt{5730} 的训练样本，因为它是 \texttt{train\_examples} 中最短的样本（我们可以通过 \texttt{compute\_length(train\_examples)} 确定这一点），因此计算起来比其他样本稍快：
+
+\begin{codebox}
+token_ids = train_examples[5730]["token_ids"]
+prompt_len = train_examples[5730]["prompt_len"]
+\end{codebox}
+
+我们不再直接报告 \texttt{sequence\_logprob} 返回的对数概率之和，而是按答案词元的数量对它们取平均。对数概率之和会随序列长度增长，因此答案较短或较长的样本之间无法直接比较。除以答案词元数量后，我们就得到一个逐词元的量，这与交叉熵损失所用的形式一致。答案词元的数量可以用总序列长度减去 \texttt{prompt\_len} 得到。
+
+\begin{codeboxt}{代码清单 8.9 计算平均负对数概率}
+from reasoning_from_scratch.ch06 import sequence_logprob
+
+tok = torch.tensor(token_ids, dtype=torch.long, device=device)
+
+with torch.no_grad():
+    seq_logprob = sequence_logprob(model, tok, prompt_len)
+    num_answer_tokens = tok.numel() - prompt_len
+    avg_logprob = -seq_logprob / num_answer_tokens
+print(f"Average logprob: {avg_logprob:.2f}")
+\end{codeboxt}
+
+得到的负平均对数概率是 1.68。
+
+现在我们可以用 PyTorch 的 \texttt{cross\_entropy} 函数计算同一个量。虽然这个函数通常是在分类场景中引入的，但在这里它也是个自然的选择。例如，模型 logits 给出词表上的预测类别分布，而目标序列则在每个位置提供正确的类别标签。
+
+与前面平均对数概率的计算一样，我们只在答案词元上计算损失，忽略提示词元（提示是作为输入提供的上下文，我们不希望模型因为复现它而受到惩罚）。这如图 8.13 所示。
+
+\myGraphic{0.92}{images/CH08_F13_Raschka2.png}{图 8.13 答案词元上交叉熵损失的输入。模型接收整体向左偏移一个词元的提示和答案作为输入，然后把答案词元的 logits 与参考答案词元进行比较。}
+
+在蒸馏过程中，我们希望学生模型以提示为条件，学习教师的推理轨迹和最终答案。因此，如图 8.13 所示，在计算交叉熵时，我们丢弃那些只对应序列中提示部分的 logits 和目标。
+
+\begin{codeboxt}{代码清单 8.10 直接计算交叉熵损失}
+input_ids = tok[:-1].unsqueeze(0)#1
+target_ids = tok[1:] #1
+logits = model(input_ids).squeeze(0) #1
+
+first_answer_logit_idx = max(prompt_len - 1, 0)#2
+answer_logits = logits[first_answer_logit_idx:] #2
+answer_targets = target_ids[first_answer_logit_idx:] #2
+
+with torch.no_grad():#3
+    ce_mean_direct = torch.nn.functional.cross_entropy( #3
+        answer_logits, answer_targets #3
+    ) #3
+print(f"Cross-entropy: {ce_mean_direct:.2f}") #3
+\end{codeboxt}
+{\noindent\small\textit{\#1 把序列偏移一个词元，使每个输入预测下一个词元目标。 \newline \#2 丢弃提示位置，使损失只覆盖教师答案。 \newline \#3 计算交叉熵损失。}\par}
+
+得到的交叉熵损失是 1.68，与代码清单 8.9 中使用 \texttt{sequence\_logprob} 函数的结果相近。换句话说，\texttt{cross\_entropy} 以更优化的方式实现了同样的核心计算。因此在训练时，我们将使用内置的 \texttt{cross\_entropy} 函数，而不是自定义的对数概率函数。
+
+代码清单 8.11 中的 \texttt{compute\_example\_loss} 辅助函数把这套逻辑封装成一个便捷函数，用于计算单个样本的\emph{仅答案损失}。“仅答案损失”指训练损失只在教师的答案词元上计算，而不在提示词元上计算。下面的代码清单把从目标准备到交叉熵计算的整套逻辑整合成一个函数。
+
+\begin{codeboxt}{代码清单 8.11 为单个蒸馏样本定义损失}
+def compute_example_loss(model, example, device):
+    token_ids = example["token_ids"]
+    prompt_len = example["prompt_len"]
+
+    input_ids = torch.tensor(#1
+        token_ids[:-1], dtype=torch.long, device=device #1
+    ).unsqueeze(0) #1
+    target_ids = torch.tensor( #1
+        token_ids[1:], dtype=torch.long, device=device #1
+    ) #1
+ #1
+    logits = model(input_ids).squeeze(0)
+
+    answer_start = max(prompt_len - 1, 0)#2
+    answer_logits = logits[answer_start:] #2
+    answer_targets = target_ids[answer_start:] #2
+
+    loss = torch.nn.functional.cross_entropy(#3
+        answer_logits, answer_targets #3
+    ) #3
+    return loss #3
+ #3
+with torch.no_grad():#4
+    loss = compute_example_loss( #4
+        model, train_examples[5730], device #4
+    ) #4
+ #4
+print(f"Loss: {loss:.2f}")
+\end{codeboxt}
+{\noindent\small\textit{\#1 创建偏移一个词元的输入-目标对。 \newline \#2 忽略提示词元，使损失只在蒸馏答案上计算。 \newline \#3 计算交叉熵损失。 \newline \#4 用于验证该辅助函数返回的损失与之前相同}\par}
+
+得到的损失同样是 1.68，这表明代码清单 8.11 中的函数按预期工作。
+
+\begin{mySidebar}{批处理}
+
+把多个样本放在一起批处理可以并行处理它们。为了保持实现紧凑并降低资源需求，我在这里省略了批处理。附录 E 更详细地讨论了面向吞吐量的批处理执行，涵盖损失计算以及一般意义上的训练。
+
+\end{mySidebar}
+
+接下来，我们定义一个小包装函数，迭代地计算多个样本的平均损失。这对于快速做合理性检查和在训练中跟踪验证损失都很有用。
+
+\begin{codeboxt}{代码清单 8.12 在多个样本上评估损失}
+@torch.no_grad()
+def evaluate_examples(model, examples, device):
+    was_training = model.training
+
+    model.eval()#1
+    total_loss = 0.0 #1
+    num_examples = 0 #1
+
+    for example in examples:#2
+        loss = compute_example_loss(model, example, device) #2
+        total_loss += loss.item() #2
+        num_examples += 1 #2
+
+    if was_training:  #3
+        model.train() #3
+
+    return total_loss / num_examples  #4
+
+train_loss = evaluate_examples(model, train_examples[:3], device)  #5
+print(f"Train loss (3 examples): {train_loss:.2f}")  #5
+
+val_loss = evaluate_examples(model, val_examples[:3], device)
+print(f"Validation loss (3 examples): {val_loss:.2f}")
+\end{codeboxt}
+{\noindent\small\textit{\#1 在对样本打分时临时切换到评估模式。 \newline \#2 对所有样本的损失求和。 \newline \#3 恢复训练模式，使该辅助函数在训练期间调用是安全的。 \newline \#4 对所有样本的损失取平均。 \newline \#5 在一个小子集上估计当前训练损失。}\par}
+
+输出如下：
+
+\begin{codebox}
+Train loss (3 examples): 0.98
+Validation loss (3 examples): 1.02
+\end{codebox}
+
+我们将在训练中复用这个评估函数。理想情况下，这两个量都应该随时间下降，这表明学生模型越来越擅长匹配教师生成的目标序列。
+
+在实践中，\emph{训练损失}（即在用于优化的训练样本上计算的损失）通常更嘈杂，因为它是基于当前正在优化的样本来测量的，会随样本顺序和近期的参数更新而波动。
+
+\emph{验证损失}是在一个独立的留出验证集上测量的，而不是在当前用于优化的样本上测量，并且计算时不更新模型权重。因此，它通常能给出更干净的信号，表明学生的改进能否泛化到训练集之外。出于这个原因，验证损失往往是更值得关注的可靠指标。
+
+\section{实现蒸馏的训练循环}
+
+数据集已经准备好、损失计算也已就位，现在我们就可以实现蒸馏的训练循环了。这一阶段在图 8.14 中突出显示。
+
+\myGraphic{0.92}{images/CH08_F14_Raschka2.png}{图 8.14 数据集准备和损失计算完成后，我们现在可以转向蒸馏的训练循环。}
+
+我们这里使用的训练循环与第 6 章中的非常相似。主要区别在于，这里我们会在多个轮次中反复遍历同一训练集，并优化交叉熵蒸馏损失，而不是 RLVR 中使用的 GRPO 目标（GRPO 损失）。详细步骤如图 8.15 所示。
+
+\myGraphic{0.92}{images/CH08_F15_Raschka2.png}{图 8.15 蒸馏训练循环。在每个轮次中，训练样本会被打乱，学生模型为每个样本计算交叉熵损失，梯度被反向传播，模型权重被更新。验证损失按一定间隔报告，以跟踪进展。}
+
+下面的 \texttt{train\_distillation} 函数实现了图 8.15 所示的循环。它在每个轮次开始时打乱训练样本，为每个样本计算损失，执行一次优化器更新，可选地裁剪过大的梯度，并定期在验证集上评估。指标还会写入一个 CSV 文件，以便我们之后查看学习曲线。
+
+\begin{codeboxt}{代码清单 8.13 实现蒸馏训练循环}
+import time
+
+def train_distillation(
+    model,
+    train_examples,
+    val_examples,
+    device,
+    epochs=2,
+    lr=5e-6,
+    grad_clip_norm=None,
+    seed=123,
+    log_every=50,
+    checkpoint_dir="checkpoints",
+    csv_log_path=None,
+):
+
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr)#1
+    model.train()
+
+    total_steps = epochs * len(train_examples)
+    global_step = 0
+    rng = random.Random(seed)
+
+    if csv_log_path is None:
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        csv_log_path = f"train_distill_metrics_{timestamp}.csv"
+    csv_log_path = Path(csv_log_path)
+
+    for epoch in range(1, epochs + 1):#2
+
+        epoch_examples = list(train_examples)#3
+        rng.shuffle(epoch_examples) #3
+
+        for example in epoch_examples:#4
+            global_step += 1
+
+            optimizer.zero_grad()#5
+
+            loss = compute_example_loss(model, example, device)#6
+
+            loss.backward()#7
+
+            if grad_clip_norm is not None:#8
+                torch.nn.utils.clip_grad_norm_( #8
+                    model.parameters(), grad_clip_norm #8
+                ) #8
+
+            optimizer.step()#9
+
+            if log_every and global_step % log_every == 0:#10
+                val_loss = evaluate_examples( #10
+                    model=model, #10
+                    examples=val_examples, #10
+                    device=device, #10
+                ) #10
+                model.train() #10
+                print(
+                    f"[Epoch {epoch}/{epochs} "
+                    f"Step {global_step}/{total_steps}] "
+                    f"train_loss={loss.item():.4f} "
+                    f"val_loss={val_loss:.4f}"
+                )
+                append_csv_metrics(
+                    csv_log_path=csv_log_path,
+                    epoch_idx=epoch,
+                    total_steps=global_step,
+                    train_loss=loss.item(),
+                    val_loss=val_loss,
+                )
+
+        ckpt_path = save_checkpoint(#11
+            model=model, #11
+            checkpoint_dir=checkpoint_dir, #11
+            step=global_step, #11
+            suffix=f"epoch{epoch}", #11
+        ) #11
+        print(f"Saved checkpoint to {ckpt_path}") #11
+    return model #11
+ #11
+
+def save_checkpoint(model, checkpoint_dir, step, suffix=""):
+    checkpoint_dir = Path(checkpoint_dir)
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    suffix = f"-{suffix}" if suffix else ""
+    ckpt_path = (
+        checkpoint_dir /
+        f"qwen3-0.6B-distill-step{step:05d}{suffix}.pth"
+    )
+    torch.save(model.state_dict(), ckpt_path)
+    return ckpt_path
+
+def append_csv_metrics(
+    csv_log_path,
+    epoch_idx,
+    total_steps,
+    train_loss,
+    val_loss,
+):
+    if not csv_log_path.exists():
+        csv_log_path.write_text(
+            "epoch,total_steps,train_loss,val_loss\n",
+            encoding="utf-8",
+        )
+    with csv_log_path.open("a", encoding="utf-8") as f:
+        f.write(
+            f"{epoch_idx},{total_steps},{train_loss:.6f},"
+            f"{val_loss:.6f}\n"
+        )
+\end{codeboxt}
+{\noindent\small\textit{\#1 步骤 1：初始化优化器（模型已经加载） \newline \#2 步骤 2：遍历训练轮次 \newline \#3 步骤 3：在轮次开始时打乱训练样本 \newline \#4 步骤 4：在当前轮次中遍历训练样本 \newline \#5 步骤 5：重置损失梯度 \newline \#6 步骤 6：计算当前样本的交叉熵损失 \newline \#7 步骤 7：反向传播梯度 \newline \#8 可选地裁剪过大的梯度，以提高训练稳定性 \newline \#9 步骤 8：更新模型权重 \newline \#10 步骤 9：定期在验证集上评估当前模型 \newline \#11 步骤 10：记录指标并保存该轮次的检查点}\par}
+
+在最大序列长度为 2,048 的情况下，完整的训练运行需要约 15 GB 显存。如果你的硬件无法承受，可以在 notebook 中更早地过滤掉更长的序列以降低资源需求，例如把代码清单 8.6 中 \texttt{filter\_examples\_by\_max\_len} 步骤的 \texttt{max\_len} 从 \texttt{2048} 改为 \texttt{1024} 或 \texttt{512}。
+
+我们来执行一次简短的训练运行。
+
+\begin{codeboxt}{代码清单 8.14 训练模型}
+torch.manual_seed(0) #1
+
+train_distillation(
+    model,
+    train_examples=train_examples[:10], #2
+    val_examples=val_examples[:10],      #2
+    device=device,
+    epochs=2,
+    lr=5e-6,
+    grad_clip_norm=1.0,  #3
+    seed=123,
+    log_every=5,
+    csv_log_path="train_distill_metrics.csv",
+)
+\end{codeboxt}
+{\noindent\small\textit{\#1 为 PyTorch 设置随机种子，使这个简短演示可复现。 \newline \#2 在一个极小的子集上训练，使本次 notebook 运行保持轻量。 \newline \#3 与第 6 章相同}\par}
+
+在查看结果之前，我们先简单谈谈这些设置。我们有意让训练运行保持简短。例如，我们只使用前 10 个训练样本和 10 个验证样本，并且只训练 2 个轮次。这纯粹是为了让 notebook 运行保持轻量、快到足以做实验。对于真正的蒸馏运行，我们当然会用多得多的样本训练，理想情况下是整个训练集。
+
+学习率（\texttt{lr=5e-6}）处于微调预训练模型的合理范围内，并且在这个设定下效果良好，这一点会体现在稍后讨论的损失曲线上。
+
+梯度裁剪设置（\texttt{grad\_clip\_norm=1.0}）与第 6 章相同，它有助于防止某个特定样本产生异常大的梯度时出现不稳定的更新。
+
+\texttt{log\_every=5} 设置意味着每 5 个训练步测量一次验证损失。由于这个演示只用了少数几个样本，这样会产生频繁的进度更新，便于我们快速验证训练循环是否按预期运行。在更大的运行中，我们通常会增大这个间隔，以减少评估开销。
+
+最后，\texttt{csv\_log\_path=}\texttt{"}\texttt{train\_distill\_metrics.csv}\texttt{"} 参数把训练损失和验证损失存储到一个 CSV 文件中，以便我们之后检查和绘制它们。
+
+这次运行的主要目标不是取得尽可能好的推理性能，而是确认蒸馏流水线能够端到端地跑通。一旦这一点得到确认，我们就可以转向更大的运行，并更详细地查看得到的学习曲线和检查点。
+
+现在我们简要看一下这次运行的输出：
+
+\begin{codebox}
+[Epoch 1/2 Step 5/20] train_loss=0.9648 val_loss=0.9082
+[Epoch 1/2 Step 10/20] train_loss=0.9844 val_loss=0.8871
+Saved checkpoint to checkpoints/qwen3-0.6B-distill-step00010-epoch1.pth
+[Epoch 2/2 Step 15/20] train_loss=0.8008 val_loss=0.8707
+[Epoch 2/2 Step 20/20] train_loss=0.7148 val_loss=0.8586
+Saved checkpoint to checkpoints/qwen3-0.6B-distill-step00020-epoch2.pth
+\end{codebox}
+
+尽管这只是一次极小的演示运行，输出已经呈现出预期的总体行为。训练损失和验证损失都随时间下降，这表明学生模型越来越擅长匹配教师生成的目标序列。验证损失在这里尤其有用，因为它是在留出样本上计算的，因此能给出更干净的信号，说明这种改进并不局限于训练样本本身。
+
+我们还可以看到，每个轮次结束时都会保存检查点。这很有用，因为它让我们之后可以恢复训练，或者用 MATH-500 测试集评估蒸馏模型的中间版本。
+
+\section{评估蒸馏模型}
+
+训练循环已经实现，最后一个阶段就是评估蒸馏模型，如图 8.16 所示。
+
+\myGraphic{0.92}{images/CH08_F16_Raschka2.png}{图 8.16 现在我们要在 MATH-500 测试集上评估蒸馏模型。}
+
+与其在 notebook 里运行完整的蒸馏过程，你可以从本章的补充材料中下载一个便捷脚本。正如上一章 RLVR 那样，把 notebook 专注于核心思路、而把运行时间较长的训练任务移到独立脚本中，通常会更方便：
+
+\begin{codebox}
+from reasoning_from_scratch.ch07 import download_from_github
+download_from_github(
+    "ch08/04_train_with_distillation/distill.py"
+)
+\end{codebox}
+
+用前面的代码下载脚本后，你可以在代码终端中按如下方式运行它（如果你不使用 \texttt{uv}，请把 \texttt{uv run} 替换为 \texttt{python}）：
+
+\begin{codebox}
+uv run distill.py \
+--data_path deepseek-r1-math-train.json \
+--validation_size 25 \
+--epochs 3 \
+--lr 1e-5 \
+--max_seq_len 2048 \
+--use_think_tokens \
+--grad_clip 1.0
+\end{codebox}
+
+使用这些设置，在 DGX Spark 上完整训练运行约需 3 小时 5 分钟，占用约 15.02 GB 显存。（与之前的 RLVR 运行相比，这算是比较轻量的，因为大部分昂贵的工作已经被移到一次性的教师数据生成步骤中。）如果你不想自己运行训练，可以下载生成的指标文件并直接查看：
+
+\begin{codebox}
+download_from_github(
+    "ch08/03_logs/deepseek-r1-2048_distill_metrics.csv"
+)
+\end{codebox}
+
+下面的代码清单实现了一个工具函数，用于可视化存储在 CSV 文件中的训练指标。
+
+\begin{codeboxt}{代码清单 8.15 绘制来自 CSV 日志的蒸馏损失}
+import csv
+import matplotlib.pyplot as plt
+
+def plot_distill_metrics(csv_path="train_distill_metrics.csv"):
+    total_steps, train_losses, val_losses, epoch_bounds = [], [], [], {}
+
+    with open(csv_path, newline="", encoding="utf-8") as f:#1
+        for row in csv.DictReader(f):
+            step = int(row["total_steps"])
+            epoch = int(row["epoch"])
+            total_steps.append(step)#2
+            train_losses.append(float(row["train_loss"]))
+            val_losses.append(float(row["val_loss"]))
+            epoch_bounds.setdefault(epoch, [step, step])[1] = step
+
+    fig, ax = plt.subplots(figsize=(7, 4))
+    ax.plot(total_steps, train_losses, label="train_loss", alpha=0.3)
+    ax.plot(total_steps, val_losses, label="val_loss")
+    ax.set_xlabel("Total Steps")
+    ax.set_ylabel("Loss")
+    ax.legend()
+
+    epoch_axis = ax.secondary_xaxis("bottom")#3
+    epoch_axis.spines["bottom"].set_position(("outward", 45)) #3
+    epochs = sorted(epoch_bounds) #3
+    epoch_axis.set_xticks( #3
+        [
+            (epoch_bounds[epoch][0] + epoch_bounds[epoch][1]) / 2
+            for epoch in epochs
+        ]
+    )
+    epoch_axis.set_xticklabels(epochs)
+    epoch_axis.set_xlabel("Epoch")
+
+    plt.tight_layout()
+    plt.show()
+
+plot_distill_metrics("deepseek-r1-2048_distill_metrics.csv")
+\end{codeboxt}
+{\noindent\small\textit{\#1 加载并绘制记录的损失。 \newline \#2 加载并绘制记录的损失。 \newline \#3 添加第二条 x 轴，使轮次编号显示在步数轴下方。}\par}
+
+得到的图如图 8.17 所示。
+
+\myGraphic{0.92}{images/CH08_F17_Raschka2.png}{图 8.17 基于 DeepSeek-R1 推理轨迹的 3 轮次蒸馏训练运行的训练损失和验证损失}
+
+图 8.17 中的训练损失曲线和验证损失曲线应作略有不同的解读。训练损失是在训练过程中针对当前步的每个训练样本计算的，而验证损失是在一个固定的小型留出集上计算的。因此验证曲线噪声更小，在这里是信息量更大的信号。我们也可以像验证损失那样，在一部分样本上计算训练损失，但这会拖慢训练。在估计训练进展方面，训练损失远不如验证损失重要。
+
+正如我们所期望的，验证损失一开始急剧下降，随后开始趋于平坦，这表明模型确实在从蒸馏数据中学习，但额外的训练带来的收益在递减。我们可以尝试更大的学习率或不同的调度方案来进行更激进的训练，但总的来说，这条曲线看起来是健康的。
+
+就像第 7 章那样，我们可以用第 3 章基于验证器的工具来评估保存的检查点。下面的命令从补充材料中下载评估脚本：
+
+\begin{codebox}
+download_from_github(
+    "ch03/02_math500-verifier-scripts/evaluate_math500.py"
+)
+\end{codebox}
+
+在代码终端中，使用推理分词器在 MATH-500 上评估蒸馏检查点，如下所示：
+
+\begin{codebox}
+uv run evaluate_math500.py \
+--dataset_size 500 \
+--which_model reasoning \
+--max_new_tokens 4096 \
+--checkpoint_path \
+"run_11/checkpoints/distill/qwen3-0.6B-distill-step06682-epoch1.pth"
+\end{codebox}
+
+对于同一次 DeepSeek-R1 运行中更靠后的检查点，请把 \texttt{...step06682-epoch1.pth} 替换为 \texttt{...step13364-epoch2.pth}、\texttt{...step20046-epoch3.pth}，依此类推。
+
+本章使用的 DeepSeek-R1 运行的评估结果汇总于表 8.1。作为参考，我还加入了第二次运行，它是用 Qwen3 235B-A22B 教师输出（一个 2350 亿参数的 Qwen3 模型）训练的。
+
+\begin{table}[htbp]
+\centering\small
+\centering
+\caption{表 8.1 不同模型检查点在 MATH-500 任务上的准确率}
+\begin{tabularx}{\linewidth}{XXXXX}
+\toprule
+方法 & 轮次 & 最终验证损失 & MATH-500 准确率 &  \\
+1 & Qwen3 0.6B 基座（第 3 章） & - & - & 15.2\% \\
+2 & Qwen3 0.6B 推理（第 3 章） & - & - & 48.2\% \\
+3 & DeepSeek-R1 & 1 & 0.5436 & 30.6\% \\
+4 & DeepSeek-R1 & 2 & 0.5349 & 32.4\% \\
+5 & DeepSeek-R1 & 3 & 0.5343 & 33.6\% \\
+6 & Qwen3 235B-A22B & 1 & 0.4043 & 45.0\% \\
+7 & Qwen3 235B-A22B & 2 & 0.3963 & 43.8\% \\
+8 & Qwen3 235B-A22B & 3 & 0.3948 & 44.2\% \\ \bottomrule
+\end{tabularx}
+\end{table}
+
+根据表 8.1 中 DeepSeek-R1 运行的结果，MATH-500 准确率从第一个轮次后的 30.6\% 提升到第三个轮次后的 33.6\%，同时验证损失从 0.5436 下降到 0.5343。这与图 8.17 中早先的学习曲线一致：学生明显在从教师生成的推理轨迹中学习，但在最初的改进之后，增益开始递减。
+
+在这个设定下，Qwen3 235B-A22B 运行的表现明显更好。一个可能的原因是教师和学生来自同一个模型家族，这意味着分词器、提示约定和整体回复风格更为一致。这会让较小的 Qwen3 学生更容易模仿教师的目标。
+
+考虑到 45\% 的 MATH-500 准确率（第 6 行），我们的蒸馏方案几乎达到了推理参考模型（48.2\%，第 2 行）的水平，而后者本身就是一个蒸馏模型，只是它是在由 Qwen3 235B-A22B 生成的、大得多的数据集上训练的。这正是蒸馏的主要权衡。
+
+一般来说，我们不指望较小的学生能与教师完全匹敌。例如，Qwen3 235B-A22B 的 MATH-500 准确率为 92.4\%，DeepSeek-R1 的 MATH-500 准确率为 91.2\%。尽管如此，我们仍能以一个便宜得多的模型还原教师推理行为中相当有用的一部分。如果使用更大的模型（例如用 40 亿或 300 亿参数的 Qwen3 版本代替 Qwen3 0.6B），我们蒸馏模型的准确率也可能更高，但这会增加训练时的计算成本。
+
+让我们退一步，把我们实现的各个部分串联成一个完整的工作流程。图 8.18 汇总了完整的蒸馏流水线，从介绍性设定开始，接着是数据集生成和预处理，然后是蒸馏训练循环本身，最后是在 MATH-500 上评估蒸馏模型。
+
+\myGraphic{0.92}{images/CH08_F18_Raschka2.png}{图 8.18 对蒸馏模型的评估完成了本章的技术内容。}
+
+这一工作流程完成了从更强的教师蒸馏出较小推理模型的核心技术方案。在实践中，每个阶段都有变化的余地，例如改变教师数据的生成方式和修改训练设置。
+
+\begin{mySidebar}{练习 8.2：不使用  词元进行蒸馏}
+
+在不使用 \texttt{--use\_think\_tokens} 的情况下重复蒸馏实验，并把结果与使用 \texttt{\textless{}think\textgreater{}...\textless{}/think\textgreater{}} 包裹推理轨迹训练的版本进行比较。检查验证损失，如有可能，在 MATH-500 上评估保存的检查点。然后把结果与表 8.1 中列出的结果进行比较。在这个设定中，显式的推理标签有多重要？
+
+\end{mySidebar}
+
+\section{推理模型的未来方向}
+
+在结束本章之前，我们来讨论推理模型接下来会走向何方。
+
+在可预见的未来，总体格局仍将保持不变。例如，一般的策略是开发一个更强的推理教师，收集高质量的推理轨迹，并把它们蒸馏到较小的学生模型中。
+
+一个明显的方向是继续改进由 DeepSeek-R1 论文推广开来的训练方案，它既包括针对旗舰模型的 RLVR（第 6 章和第 7 章），也包括针对注重计算效率的较小模型的蒸馏。
+
+第二个方向是推理时的优化。在实践中，推理模型不应总是产出同样长度的答案。有些任务得益于简短直接的回复，而另一些则得益于更详细、多步骤的推理。这为应用层更自动、更灵活的推理扩展留出了空间：由外围系统决定何时请求简短答案、何时分配更多推理预算，以及何时提前停止。例如，OpenAI 在 2025 年发布 GPT-5 时就实现了这样一套系统，加入了一个“auto”模式来引导推理力度和推理轨迹的生成长度。
+
+第三个改进方向是 RLVR 的奖励生成。当前许多工作仍然严重依赖基于最终答案的奖励，尤其是在数学和代码领域。但对中间推理步骤（而不仅是最终结果）进行检验的\emph{过程奖励}，可能会提供更丰富的训练信号，帮助模型学到更可靠的推理策略。例如，DeepSeek-Math-V2 论文（\href{https://arxiv.org/abs/2511.22570}{https://arxiv.org/abs/2511.22570}）最近证明，在训练期间对整个答案进行评判可以显著提升推理性能。
+
+第四个方向是推理模型作为更大智能体应用内部引擎的角色日益重要，这类应用包括 OpenAI Codex、Claude Code 和 OpenClaw。在这些场景中，模型不仅要解决简单的数学或编程问题，还要进行规划、调用工具、从失败中恢复，并协调更长的工作流程。这自然会把奖励设计推向数学和代码正确性之外。我们可能希望为成功的工具使用、信息检索、政策合规等设置奖励。这反过来引出了\emph{多奖励训练}，即同时优化多个目标，而不是依赖单一的正确答案分数。
+
+在这种场景下，蒸馏很可能仍将十分重要，因为它提供了一种实用的方式，把这些更丰富的行为从更大、更昂贵的教师系统迁移到更小的模型中，而后者更易于部署、可以在本地运行，并且对用户来说更具成本效益。
+
+\section{结论}
+
+本书的主要技术内容到此结束。接下来我们简要给出一些建议，说明下一步可以尝试什么、如何跟上这个快速发展的领域，以及在哪里能找到更多材料。
+
+\subsection{下一步}
+
+一个实用的下一步是开始把本书中的方法组合起来使用，而不是把它们当作彼此孤立的技术。例如，你可以从一个强教师蒸馏出一个较小的模型，用 RLVR 继续训练它，然后在部署时应用自洽性或自我修正等推理时扩展方法。进行这类对比，往往是培养直觉、判断在给定场景下哪种方法最有帮助的最快方式。
+
+附录也是继续学习的好去处。它们涵盖了更多主题，例如 LLM 架构细节、用于提高吞吐量的批处理执行，以及其他的评估方法。
+
+最后，配套代码仓库（\href{https://github.com/rasbt/reasoning-from-scratch}{https://github.com/rasbt/reasoning-from-scratch}）包含了额外材料，以及比 notebook 更适合长时间运行和更大规模实验的独立脚本。
+
+\subsection{在快速发展的领域中保持更新}
+
+希望本书让你更清楚地了解了现代推理模型在实践中是如何工作的。
+
+推理模型的研究进展迅速，具体的算法、数据集和最佳实践都会不断变化，但本书中的核心思想仍将保持相关且有用。这些思想包括仔细的模型评估、区分推理时方法与训练时方法，以及理解训练损失和奖励信号是如何计算的。
+
+当新方法出现时，把它们映射回这些基本原理会很有帮助。许多新技术最好被理解为我们在本书中实现的这些基本组件的变体或组合，即便周边的训练方案变得更加复杂。
+
+在实践中，我推荐几个资源。第一，你可以浏览 arXiv 上近期的机器学习和 AI 论文（\href{https://arxiv.org/list/cs.LG/recent}{https://arxiv.org/list/cs.LG/recent}），以尽早发现新的训练和评估思路。但要意识到，新论文的数量如今庞大到几乎不可能全面跟进，因此通常更好的做法是把 arXiv 当作浏览主题和有前途论文的方式，而不是试图读完所有内容。
+
+第二，阅读新发布模型的技术摘要和报告，因为它们往往包含关于提示约定、基准测试和局限性的最有用的细节。这些通常由开发者直接发布在 Hugging Face 模型中心、公告博客文章和社交媒体上。
+
+第三，关注社交媒体平台 X 上以及 r/LocalLLaMA（\href{https://www.reddit.com/r/LocalLLaMA/}{https://www.reddit.com/r/LocalLLaMA/}）等社区中的从业者讨论，那里的实现细节、复现结果和失败案例往往会在被整理成正式论文之前就先出现。
+
+AI 助手或“深度研究”工具对于监控这些来源、总结新进展也很有用，但它们最好充当过滤器，而不能取代阅读原始论文和模型卡。
+
+我也经常在我的博客 \href{https://magazine.sebastianraschka.com}{https://magazine.sebastianraschka.com} 上撰写关于 AI 和 LLM 主题的文章。
+
+\section{总结}
+
+\begin{itemize}
+\item 蒸馏用一个较大教师 LLM 产生的输出来训练一个较小的学生 LLM。
+\item 硬蒸馏通常比软蒸馏更实用，因为教师的 logits 往往无法获取，而教师的文本输出存储和复用的成本要低得多。
+\item 我们使用 DeepSeek-R1 作为教师模型，使用 Qwen3 0.6B 作为学生模型。
+\item 蒸馏数据集由 12,000 道与 MATH-500 不重叠的 MATH 训练题构建而成。
+\item 每个训练样本都把渲染后的提示与教师的推理轨迹和最终答案组合在一起，可选地通过 \texttt{\textless{}think\textgreater{}...\textless{}/think\textgreater{}} 标签分隔。
+\item 为提高效率，我们只对数据集分词一次，按序列长度过滤，并在多个轮次中复用处理后的样本。
+\item 训练目标是仅答案的交叉熵，它等价于正确下一个词元的负平均对数概率。
+\item 蒸馏训练循环是一个标准的监督学习循环，包括每个轮次打乱训练样本、计算损失、反向传播、更新模型权重，以及跟踪验证损失。
+\item 验证损失是训练期间要关注的主要信号。此外，定期在基准测试数据集上评估检查点也是有用且值得推荐的做法。
+\end{itemize}

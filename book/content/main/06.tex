@@ -1,0 +1,1188 @@
+\mySmallsection{本章涵盖}
+\begin{itemize}
+\item 基于人类反馈的强化学习与基于可验证奖励的强化学习之间的区别
+\item 把推理 LLM 的训练视为带有任务正确性奖励的强化学习问题
+\item 对每个提示（prompt）采样多个回复，以计算组相对学习信号
+\item 使用基于组的策略优化更新 LLM 权重，以提升推理能力
+\end{itemize}
+
+推理性能与答案准确率既可以通过提高推理阶段的计算预算来改善，也可以通过使用特定的模型训练方法来改善。如图 6.1 所示，本章关注强化学习（reinforcement learning, RL），这是推理模型最常用的训练方法。
+
+\myGraphic{0.92}{images/CH06_F01_Raschka2.png}{图 6.1 本书所涵盖主题的模型。本章关注通过额外训练（第 4 阶段）来提升推理能力的技术。具体而言，本章涵盖强化学习（RL）。}
+
+我们首先会在 LLM 的语境下对 RL 做一般性介绍，然后讨论用于 LLM 的两种最常见的 RL 方法。
+
+\section{LLM 的强化学习简介}
+
+推理时扩展与训练时扩展是提升 LLM 推理性能的两种不同途径，如图 6.2 所示。推理时扩展通过为每个生成的答案花费更多计算来提升准确率，而训练时扩展则通过在训练期间投入额外的计算来提升准确率。本章关注训练时扩展。
+
+\myGraphic{0.92}{images/CH06_F02_Raschka2.png}{图 6.2 推理时扩展与训练时扩展的概念对比。在推理时增加计算，通过为每次答案生成投入更多资源来提升准确率；而在训练时增加计算，则通过前期投入更多资源来提升准确率。}
+
+尽管图 6.2 把推理时扩展与训练时扩展呈现为两个独立概念，但在实践中二者可以结合使用。例如，在通过 RL 提升模型的推理能力之后（这正是本章的核心关注点），还可以应用第 4 章和第 5 章介绍的推理时扩展技术来进一步提升性能。
+
+RL 关注模型如何从一系列动作及其结果中学习，经典例子包括训练智能体下国际象棋、围棋或玩电子游戏。面向 LLM 的 RL 虽然建立在这些研究之上，但在一些重要方面有所不同，而且往往与我们所熟悉的 LLM 训练技术颇为相似。由于本书关注语言模型，我们不会泛泛介绍 RL，而是聚焦于 RL 在 LLM 训练中是如何应用的。
+
+那么在实践中，RL 对 LLM 意味着什么？从高层来看，RL 通常是作为一个后训练阶段，叠加在预训练语言模型之上，有时还在指令微调之后。这一设置如图 6.3 所示。
+
+\myGraphic{0.92}{images/CH06_F03_Raschka2.png}{图 6.3 LLM 常见的训练阶段。推理训练与偏好调优阶段的先后顺序可以不同，有些流水线会交替进行推理训练与偏好调优，而不是严格地顺序执行。}
+
+LLM 有两个常见的 RL 阶段：\emph{推理训练}与\emph{偏好调优}。如图 6.3 所示，RL 通常在\emph{指令微调}之后应用，而偏好调优往往紧随推理训练之后。
+
+不过，正如 DeepSeek 团队在其 DeepSeek-R1 工作中所展示的，以推理为核心的 RL 也可以直接应用于预训练的基础模型，从而跳过指令微调和偏好调优两个阶段。这样得到的模型在推理准确率上通常弱于经过完整训练流水线的模型，但仍会表现出清晰而稳健的推理行为。更重要的是，把推理训练直接应用于基础模型可以避免多个训练阶段效应的混杂，从而更容易将观察到的提升明确归因于推理训练本身。
+
+在进一步深入探讨 RL 如何为 LLM 实现之前，我们先在概念层面简要比较一下 RL 与预训练。在预训练期间，LLM 被训练去预测大量文本中的下一个词元，模型的许多核心能力与涌现行为（例如回答知识类问题和遵循简单指令）都是在这一阶段形成的。
+
+\begin{myWarning}{注意}
+ 预训练是我此前那本书\emph{《从零构建大语言模型》}的主要内容，但要读懂本章或本书其余部分，并不需要熟悉那本书的内容。\end{myWarning}
+
+在预训练模型之上应用 RL 之所以有吸引力，是因为它让我们可以优化整体输出，例如答案正确性或偏好，而不是只优化单个词元和下一词元预测。从这个意义上说，预训练主要构建知识，而 RL 塑造模型如何使用这些知识，包括其推理行为。
+
+如图 6.4 所示，接下来的两个小节将对 RL 在 LLM 训练中的使用方式做一个高层概览，并为本章其余部分所采用的方法奠定背景。
+
+\myGraphic{0.92}{images/CH06_F04_Raschka2.png}{图 6.4 本章路线图。在本节对 LLM 的 RL 做简要介绍之后，我们将讨论两种 RL 阶段——RLHF 与 RLVR——之间的区别。在本章其余部分，我们将聚焦于使用 GRPO 算法实现 RLVR。}
+
+\subsection{最初的人类反馈强化学习流水线（RLHF）}
+
+2022 年，InstructGPT 论文《Training language models to follow instructions with human feedback》（\href{https://arxiv.org/abs/2203.02155}{https://arxiv.org/abs/2203.02155}）提出了基于人类反馈的强化学习（RLHF），这是一种利用人类偏好标签来改变模型行为的训练方法。事实上，RLHF 是把 GPT-3 变成 ChatGPT 所用原始模型的关键要素，也可以说正是它让 LLM 在 2022 年广受欢迎。
+
+从高层来看，RLHF 是实现偏好调优阶段最流行的做法。在 RLHF 之前，LLM 主要通过预训练来训练，某些情况下还会用有监督微调，二者都基于下一词元预测目标。RLHF 超越了这种词元级别的优化，转而在整体输出上优化模型（在这里，RLHF 优化的是人类如何对 LLM 输出排序和评估）。
+
+为了让这一点更具体，考虑下面这个提示（prompt）：“我想买一台用于编程和日常使用的笔记本电脑。我应该考虑哪些方面？”
+
+模型可能生成两个候选回复：
+
+\begin{itemize}
+\item 回复 A：“你应该考虑 CPU、内存、存储、GPU、屏幕分辨率、电池续航、键盘手感、接口选择、散热设计和价格。”
+\item 回复 B：“对于编程和日常使用，重点关注速度快的 CPU、至少 16 GB 的内存，以及容量至少 256 GB 的固态硬盘。舒适的键盘和良好的电池续航也很重要。只有当你打算在本地训练小型 LLM 时，GPU 才可能重要。”
+\end{itemize}
+
+两个回复都提到了相关要点，但人类数据标注者可能更偏好回复 B，因为它更具体，也更贴合提示中所述的使用场景。在 RLHF 中，这类成对偏好会跨许多提示收集起来，用于训练模型偏向人类一致评价更高的回复。
+
+如图 6.5 所示，RLHF 有两个主要步骤：（1）训练奖励模型（它本身就是一个 LLM），（2）用该奖励模型为目标 LLM 的输出打分并对其微调。
+
+\myGraphic{0.92}{images/CH06_F05_Raschka2.png}{图 6.5 基于人类反馈的强化学习（RLHF）的两阶段概览。首先，在经人类排序的回复上训练奖励模型，为每个回复赋予一个偏好分数。其次，在 RL 目标函数内使用这些奖励分数更新 LLM，以鼓励更受偏好的回复、抑制不太理想的回复。}
+
+RLHF 的第一步是训练\emph{奖励模型}，如图 6.5 上方子图所示。这里，我们让 LLM 为每个提示生成多个回复（例如使用第 4 章介绍的温度缩放和 top-\emph{p} 过滤方法），并让人类标注者根据人类偏好把答案从最好到最差排序。
+
+这些人类偏好会通过一个统计偏好模型转换为奖励模型的训练目标，该模型把成对比较映射为相对质量分数。奖励模型通常是一个从预训练 LLM 初始化的独立模型，它被训练为对每个回复输出一个单值（标量）奖励分数，以反映其被感知到的质量。这样做的目的是让奖励模型能够自动为新的模型输出打分，从而不必在每一步训练中都进行人工标注。
+
+RLHF 的第二步是用奖励模型为其答案赋予的奖励分数来训练 LLM（例如，差的答案可能得到 –2，好的答案可能得到 +2）。
+
+我们在这里讨论 RLHF，是因为它可以被视为以推理为核心的 RL 方法（例如基于可验证奖励的强化学习，RLVR）的前身。虽然 RLHF 与 RLVR 的训练信号来源不同，但流水线的底层结构（生成回复、为其打分、通过 RL 更新模型）是密切相关的。
+
+\subsection{从人类反馈到可验证奖励}
+
+RLHF 可能相当繁琐，因为它需要额外训练一个奖励模型，而奖励模型往往是一个大型 LLM，训练成本也很高。基于可验证奖励的强化学习（RLVR）简化了这一设置：它用可验证奖励取代了 LLM 奖励模型，这些奖励以确定性方式计算，无需人工标注。例如，第 3 章介绍的数学验证器就是一个针对数学问题的可验证奖励生成器。给定一道数学题（以及一个正确解），数学验证器会自动检查所生成解的最终答案是否与标准答案一致，并赋予相应的奖励：回答正确得 1，回答错误得 0。
+
+在 RLVR 中，图 6.5 所示的两步 RLHF 流水线压缩成了一个训练循环，它与 RLHF 的第 2 步类似：模型生成回复，验证器赋予奖励，这些奖励被直接用于更新模型。这一简化的 RLVR 训练流程如图 6.6 所示。
+
+\myGraphic{0.92}{images/CH06_F06_Raschka2.png}{图 6.6 RLVR 概览。LLM 生成一个回复，由确定性验证器（例如第 3 章的数学验证器）进行评估，该验证器赋予一个正确性标签，该标签在 RL 目标函数内用作奖励信号来更新模型。}
+
+RLVR 的流行在很大程度上可以追溯到 2025 年 DeepSeek-R1 的成功（\href{https://arxiv.org/abs/2501.12948}{https://arxiv.org/abs/2501.12948}），它表明不依赖人类偏好数据或学习得到的奖励模型也能实现强大的推理性能。DeepSeek-R1 通过使用可自动验证的奖励来训练推理行为，包括对数学问题的正确性检查（类似于我们在第 3 章中的验证器），以及对代码相关任务的代码编译与执行。
+
+代码执行超出了本书的范围，因为它需要在一个安全的执行环境中训练 LLM。这意味着要在隔离沙箱中编译并运行模型生成的代码，使其无法以不安全的方式访问宿主系统、私有文件或外部服务，这会让设置比求解数学问题复杂得多。无论采用哪种方式，验证数学任务（以二值标签检查答案是否正确）与验证代码编译（同样以二值标签检查代码能否编译）背后的思路是相似的，而 RLVR 训练算法也会完全相同。
+
+总结来说，相比 RLHF，RLVR 有几个实际优势。第一，它省去了训练和维护一个独立奖励模型的需要，而这样的奖励模型在规模和成本上往往与基础 LLM 相当。
+
+第二，RLVR 需要访问可靠的验证信号，这把它限制在特定领域，例如数学和代码。但可验证奖励是确定性的、可复现的，也就是说，对同一输出每次都会产生相同的结果，这避免了人工偏好标注中出现的噪声和不一致。
+
+最后，RLVR 能自然地扩展到大规模训练集，因为有了参考解，就可以对任意数量的模型生成答案自动计算奖励，而无需额外的人工标注工作。
+
+\section{使用 GRPO 的 RLVR}
+
+既然我们已经了解了整体图景，也看到了 RL 在 LLM 整体开发生命周期中处于什么位置，接下来就转向实现。具体来说，我们将实现 RLVR 来训练一个推理模型，如图 6.7 中的本章路线图所示。该方法与 DeepSeek-R1-Zero 类似，但我们会以小得多的规模来应用它，使用更小的模型和更少的数据，因为一次与之相当的全量训练运行需要数十万美元的 GPU 计算费用。
+
+\myGraphic{0.92}{images/CH06_F07_Raschka2.png}{图 6.7 我们已经了解了 LLM 的两种主要 RL 方法：RLHF 与 RLVR。本章其余各节聚焦于使用 GRPO 算法实现 RLVR，从加载数据集到实现完整的训练循环。}
+
+RLVR 定义了整体的训练设置，也就是使用可自动验证的奖励。此外，我们还需要一个具体的\emph{策略优化}算法，用于在这个 RLVR 框架内更新模型权重并训练模型。
+
+“策略（policy）”一词是 RL 的专有术语，在此语境下指的是我们想要训练的 LLM。具体来说，我们将使用\emph{组相对策略优化}（GRPO）算法进行策略优化。简而言之，RLVR 决定有哪些学习信号可用，而 GRPO 决定如何使用这些信号来更新模型权重。
+
+\begin{mySidebar}{策略梯度算法}
+
+用于 LLM 的一种广泛使用的策略梯度算法是\emph{近端策略优化}（PPO），它在 RLHF 中得到了普及。原则上，同一个算法也可以应用于 RLVR 场景。
+
+在训练 DeepSeek-R1 推理模型时，DeepSeek 团队选择了一个更简单的替代方案——GRPO，该算法最初在其“DeepSeekMath”论文（\href{https://arxiv.org/abs/2402.03300}{https://arxiv.org/abs/2402.03300}）中提出。GRPO 比 PPO 更节省资源，因为它不需要单独的价值模型来估计价值函数。相反，GRPO 从一组采样回复内部的相对比较中获取学习信号，这大幅降低了计算开销。如果你感兴趣，可以在我的文章“The State of Reinforcement Learning for LLM Reasoning”（\href{https://magazine.sebastianraschka.com/p/the-state-of-llm-reasoning-model-training}{https://magazine.sebastianraschka.com/p/the-state-of-llm-reasoning-model-training}）中找到 PPO 与 GRPO 更详细的并列比较。
+
+本章我们将聚焦于使用 GRPO 实现 RLVR，这与 DeepSeek-R1 及其他流行推理模型所使用的方法非常相似。在下一章，我们将在此基础上介绍 GRPO 的若干实用扩展，进一步提升训练稳定性和推理性能。
+
+\end{mySidebar}
+
+\subsection{借助厨师类比直观理解 GRPO}
+
+用于 RLVR 的 GRPO 算法的技术细节一开始可能有点让人吃不消，因为它有很多组成部分，也有大量 RL 领域的专有术语。所以在开始技术概览与实现之前，先看看图 6.8，它借助厨师做菜的类比来介绍 GRPO 的技术术语和方法。
+
+\myGraphic{0.92}{images/CH06_F08_Raschka2.png}{图 6.8 用厨师类比概述用于 RLVR 的 GRPO 算法。生成多条采样轨迹（rollout）并为其打分，计算相对优势（值），并使用带有基于 KL 的正则化损失项的策略梯度目标函数来更新模型参数。}
+
+沿着图 6.8 的流程图走一遍，想象我们经营着一个小型外卖服务：
+
+\begin{enumerate}
+\item 每天，我们都会收到一位顾客的请求（提示），请我们准备某道菜（例如千层面）。
+\item 对于这个请求，我们烹制我们著名的千层面，但在做的过程中，我们会尝试几种不同的食谱变体（即\emph{采样轨迹}）。
+\item 做好这些食谱之后，我们做出了多道菜（\emph{补全}）。注意在 LLM 场景中，\emph{采样轨迹}（rollout）指的是针对一个提示的整个生成过程，而补全则是最终输出的文本。在实践中，这两个术语常常互换使用。
+\item 顾客只有在品尝完整道菜之后才会给我们反馈（即\emph{奖励}），而不是在做菜过程中给反馈。这意味着我们是对最终结果整体评判，而不是评判单个烹饪步骤。
+\item 我们根据第 4 阶段顾客的反馈，比较各道菜之间的相对表现。这有助于我们找出哪些食谱变体在这个特定请求上获得了更高奖励、哪些获得了更低奖励。
+\item 对于每一道完成的菜，我们还会记录它与我们当前烹饪风格有多相符，也就是说，它在多大程度上遵循了我们惯用的技法和食材选择（\emph{logprobs}）。
+\item 利用第 5 阶段的相对反馈，以及第 6 阶段中每道菜与我们当前烹饪风格的相符程度，我们决定如何调整烹饪风格（即\emph{策略梯度损失}）。在这里，我们要强化那些带来更好菜品的做法，减少那些导致更差菜品的做法。
+\item 与此同时，我们查阅我们最初的食谱书。
+\item 接着我们施加一个风格保持惩罚，它鼓励尝试新的食谱变体，但防止烹饪风格发生过于剧烈的改变，以免吓跑现有顾客。
+\item 基于偏好的调整与烹饪风格保持惩罚被合并成单一的整体度量，也就是总损失，它决定烹饪风格应如何改变。目标是在顾客满意度与一致性之间取得平衡。
+\item 最后，我们更新烹饪风格（基于梯度的模型权重更新），使未来的菜品更有可能满足顾客偏好，同时仍与最初的食谱书保持接近。
+\end{enumerate}
+
+即便在这个相对基础的类比中，GRPO 依然有很多组成部分和各种环节。
+
+\subsection{GRPO 的高层流程}
+
+沿用上一节的厨师类比，图 6.9 的流程图给出了用于 RLVR 的 GRPO 算法的技术概览，其中包含我们逐步实现 GRPO 时将计算出的具体数值。
+
+\myGraphic{0.92}{images/CH06_F09_Raschka2.png}{图 6.9 RLVR 的 GRPO 逐步更新过程。（1）采样一个提示并生成多条采样轨迹。（2）用可验证奖励为每条采样轨迹打分。（3）根据这些奖励计算组相对优势（值）。（4）计算每条采样轨迹在当前模型下的对数概率。（5）把优势（值）与对数概率组合起来，形成策略梯度损失。（6）加入针对参考模型的 KL 正则化项，并用得到的总损失更新模型参数。}
+
+图 6.9 中的 GRPO 概要包含许多技术组件。我们将先实现一个简化版的 GRPO，省略图右侧所示的\emph{KL 损失}项。在第 7 章，我们会补上这个缺失的 KL 损失项，以保证完整性。KL 损失是 GRPO 原始形式的一部分，但并非严格必需。许多 LLM 开发者在实践中会省略它，因为这样做可以简化实现，有时还能提升建模性能。
+
+\begin{myWarning}{注意}
+ 熟悉 GRPO 或其他策略梯度方法的读者可能会问，为什么不使用截断的策略比率；我们会在下一章介绍。\end{myWarning}
+
+如果图 6.9 中的概览看起来复杂，不必担心。我们会一步步构建这个算法。眼下，最好把图 6.9 当作一张高层路线图，在我们逐个处理各个组件时帮助我们定位。
+
+\section{加载预训练模型}
+
+与前几章一样，我们先加载预训练模型（见图 6.10 中的第 5 阶段），然后用它生成 GRPO 所需的采样轨迹（对提示的答案）。
+
+\myGraphic{0.92}{images/CH06_F10_Raschka2.png}{图 6.10 在第 5 阶段，我们加载用于模型训练的预训练模型（本节）和数据集（下一节）。}
+
+下面的代码清单展示了我们之前用于加载分词器和基础模型的同一份代码。
+
+\begin{codeboxt}{代码清单 6.1 加载分词器和基础模型}
+import torch
+from reasoning_from_scratch.ch02 import get_device
+from reasoning_from_scratch.ch03 import (
+     load_model_and_tokenizer
+)
+
+device = get_device()
+device = torch.device("cpu")  #1
+
+model, tokenizer = load_model_and_tokenizer(
+    which_model="base",
+    device=device,
+    use_compile=False
+)
+\end{codeboxt}
+{\noindent\small\textit{\#1 若要在 GPU 上运行代码（前提是你的机器支持），请删除这一行。}\par}
+
+请注意，前面的代码默认在 CPU 上运行，以确保你得到的结果与本章所示的结果更为一致。完整读完本章之后，我建议删除 \texttt{device = torch.device(}\texttt{"}\texttt{cpu}\texttt{"}\texttt{)} 这一行，并在 GPU 上运行本章代码。
+
+接下来，为了确保模型被正确加载，我们会在一个简单的数学提示上，用第 4 章的温度采样与 top-\emph{p} 采样代码检查一下。
+
+\begin{codeboxt}{代码清单 6.2 使用温度缩放和 top-\emph{p} 采样生成文本}
+from reasoning_from_scratch.ch03 import render_prompt
+from reasoning_from_scratch.ch04 import (
+    generate_text_stream_concat_flex,
+    generate_text_top_p_stream_cache
+)
+
+raw_prompt = (
+    "Half the value of $3x-9$ is $x+37$. "
+    "What is the value of $x$?"
+)
+prompt = render_prompt(raw_prompt)
+
+torch.manual_seed(0)
+response = generate_text_stream_concat_flex(
+    model, tokenizer, prompt, device,
+    max_new_tokens=2048, verbose=True,
+    generate_func=generate_text_top_p_stream_cache,
+    temperature=0.9,
+    top_p=0.9
+)
+print(response)
+\end{codeboxt}
+
+模型打印出 \texttt{"}\texttt{ \textbackslash boxed\{58\}}\texttt{"}，这是一个错误答案（正确答案是 \texttt{83}），但没关系，因为这里的目标只是确保代码能顺利运行。
+
+\section{加载 MATH 训练子集}
+
+接下来，我们加载用于以 GRPO 训练模型的数据集。我们将使用从原始 MATH 数据集派生出的、与之不重叠的训练子集，这意味着所有 MATH-500 评估题目都被明确排除在训练数据之外。这样可以防止数据泄漏，并确保训练与评估之间干净分离，如图 6.11 所示。
+
+\begin{myWarning}{注意}
+ 关于该数据集如何构造的细节，参见 \href{https://github.com/rasbt/math\_full\_minus\_math500}{https://github.com/rasbt/math\_full\_minus\_math500}。\end{myWarning}
+
+\myGraphic{0.92}{images/CH06_F11_Raschka2.png}{图 6.11 MATH 数据集的结构与划分。完整数据集包含约 12,500 道题，其中 500 道构成测试集（MATH-500），我们在第 3 章用它来评估模型。另有 12,000 道与之不重叠的题目用于本章的训练。}
+
+为了加载图 6.11 所示 MATH 训练集中的 12,000 道数学题，我们定义下面的 \texttt{load\_math\_train} 函数。它与第 3 章中的 \texttt{load\_math500\_test} 函数类似，只是指定了不同的文件路径。
+
+\begin{codeboxt}{代码清单 6.3 加载 MATH 训练集}
+import json
+import requests
+from pathlib import Path
+
+def load_math_train(local_path="math_train.json", save_copy=True):
+    local_path = Path(local_path)
+
+    url = (
+        "https://raw.githubusercontent.com/rasbt/"
+        "math_full_minus_math500/refs/heads/main/"
+        "math_full_minus_math500.json"
+    )
+    backup_url = (  #1
+        "https://f001.backblazeb2.com/file/reasoning-from-scratch/"
+        "MATH/math_full_minus_math500.json"
+    )
+
+    if local_path.exists():   #2
+        with local_path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+    else:
+        try:
+            r = requests.get(url, timeout=30)
+            r.raise_for_status()
+        except requests.RequestException:
+            print("Using backup URL.")
+            r = requests.get(backup_url, timeout=30)
+            r.raise_for_status()
+
+        data = r.json()
+
+        if save_copy:  #3
+            with local_path.open("w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+
+    return data
+
+math_train = load_math_train()
+print("Dataset size:", len(math_train))
+\end{codeboxt}
+{\noindent\small\textit{\#1 备用 URL，以防 GitHub 托管的文件无法访问 \newline \#2 如果本地文件已经下载，就从本地文件加载。 \newline \#3 可选：为后续运行缓存一份本地副本。}\par}
+
+前面的代码应打印 \texttt{"}\texttt{Dataset} \texttt{size:} \texttt{12000}\texttt{"}，表示数据集已正确加载。
+
+接下来，我们可以打印 12,000 条记录中的一条，以了解数据集的结构。为此，我们使用 \texttt{pprint} 标准库中的 \texttt{pprint} 函数，因为它在格式化字典条目方面比普通的 \texttt{print} 函数更美观：
+
+\begin{codebox}
+from pprint import pprint
+pprint(math_train[4])
+\end{codebox}
+
+得到的条目如下（索引 4 对应数据集中的第 5 条记录）：
+
+\begin{codebox}
+{
+    "answer": "6",
+    "level": "Level 3",
+    "problem": (
+        "Sam is hired for a 20-day period. On days that he "
+        "works, he earns $\\$60. For each day that he does "
+        "not work, $\\$30 is subtracted from his earnings. "
+        "At the end of the 20-day period, he received "
+        "$\\$660. How many days did he not work?"
+    ),
+    "solution": (
+        "Call $x$ the number of days Sam works and $y$ the "
+        "number of days he does not... Thus, Sam did not "
+        "work for $\\boxed{6}$ days."
+    ),
+    "type": "Algebra",
+    "unique_id": 4,
+}
+\end{codebox}
+
+如你所见，每个数据集样本都以字典形式存储，包含若干字段。训练时相关的字段是 \texttt{"}\texttt{problem}\texttt{"}，它用作提示，以及 \texttt{"}\texttt{answer}\texttt{"}，它是我们用数学验证器核对模型输出时所依据的目标答案。
+
+数据集中还包含 \texttt{"}\texttt{solution}\texttt{"} 字段，里面有完整的解题过程。虽然原则上可以用这类分步解答来评估中间的推理步骤，但这样做会不必要地约束模型，并可能导致过拟合到某个特定解答和风格。相反，我们希望让模型更自由地探索解空间。
+
+\section{对采样轨迹进行采样}
+
+既然已经设置好预训练基础模型并加载了数据集，我们就可以实现 GRPO 的各个阶段了，如图 6.12 所示。
+
+\myGraphic{0.92}{images/CH06_F12_Raschka2.png}{图 6.12 本节及后续几节将实现通过可验证奖励在 MATH 数据集上训练 LLM 所需的各个 GRPO 阶段。}
+
+图 6.13 以简化形式重新回顾了我们先前介绍的 GRPO 概览，省略了 KL 损失项（Kullback-Leibler 散度损失的简称）。我们会在下一章补上它。可以把 KL 损失看作一个惩罚项，它抑制更新后的模型偏离参考模型太远。图 6.13 将作为一张简化路线图，供我们在逐步讲解算法各组件时参考。
+
+\myGraphic{0.92}{images/CH06_F13_Raschka2.png}{图 6.13 RLVR 的 GRPO 逐步更新过程（不含 KL 损失项）。我们将先提示 LLM 生成不同的采样轨迹。}
+
+如图 6.13 所示，我们先让 LLM 生成多条采样轨迹。这里，\emph{采样轨迹}（rollout）是一个 RL 术语，简单地说就是模型针对给定提示生成的完整答案。
+
+我们可以复用代码清单 6.2 中的 \texttt{generate\_text\_stream\_concat\_flex} 函数来生成采样轨迹。不过，我们在先前定义该函数时给它加了 \texttt{@inference\_mode} 装饰器，它会为提升效率而禁用若干 PyTorch 特性。由于我们稍后要执行反向传播，\texttt{@inference\_mode} 会让该函数与我们的训练设置不兼容。（这里“反向传播”指的是 PyTorch 根据损失计算梯度、以便优化器更新模型权重的那一步。）我们需要改用 \texttt{@torch.no\_grad} 装饰器，它在前向传播期间禁用梯度追踪，但不会把 PyTorch 切换到仅推理模式。
+
+让我们把这个函数改写得更紧凑一些，并命名为 \texttt{sample\_response}。该函数生成的文本将与 \texttt{generate\_text\_stream\_concat\_flex(..., generate\_func=generate\_text\_top\_p\_stream\_cache)} 相同。我们可以通过以下方式来验证：在相同的 \texttt{random\_seed}、\texttt{temperature} 和 \texttt{top\_p} 设置下，两个函数会产生完全相同的回复。
+
+\begin{codeboxt}{代码清单 6.4 定义采样轨迹生成函数}
+from reasoning_from_scratch.qwen3 import KVCache
+from reasoning_from_scratch.ch04 import top_p_filter
+
+@torch.no_grad()
+def sample_response(
+    model,
+    tokenizer,
+    prompt,
+    device,
+    max_new_tokens=512,
+    temperature=0.8,
+    top_p=0.9,
+):
+    input_ids = torch.tensor(
+        tokenizer.encode(prompt),
+        device=device
+        )
+
+    cache = KVCache(n_layers=model.cfg["n_layers"])  #1
+    model.reset_kv_cache()
+    logits = model(input_ids.unsqueeze(0), cache=cache)[:, -1]
+
+    generated = []
+    for _ in range(max_new_tokens):
+        if temperature and temperature != 1.0:  #2
+            logits = logits / temperature
+
+        probas = torch.softmax(logits, dim=-1)
+        probas = top_p_filter(probas, top_p)  #3
+        next_token = torch.multinomial(
+            probas.cpu(), num_samples=1
+        ).to(device)
+
+        token_id = next_token.item()
+        generated.append(token_id)
+
+        if (
+            tokenizer.eos_token_id is not None
+            and token_id == tokenizer.eos_token_id
+        ):
+            break
+
+        logits = model(next_token, cache=cache)[:, -1]
+
+    full_token_ids = torch.cat(
+        [input_ids,
+         torch.tensor(generated, device=device, dtype=input_ids.dtype),]
+    )
+    return full_token_ids, input_ids.numel(), tokenizer.decode(generated)
+\end{codeboxt}
+{\noindent\small\textit{\#1 缓存历史键和值以实现高效生成，如第 2 章所述。 \newline \#2 应用第 4 章的温度缩放。 \newline \#3 应用第 4 章的 top-p 过滤。}\par}
+
+注意，该函数现在还返回提示词元加答案词元的词元 ID、词元数量（\texttt{input\_ids.numel()}）以及答案文本（\texttt{tokenizer.decode(generated)}）。返回这些内容可以让我们稍后简化若干下游函数。
+
+除此之外，这里没有新东西。这段代码只是我们先前开发的代码的精简版本；它把第 2 章的 \texttt{generate\_text\_basic\_stream\_cache} 函数与第 4 章的温度采样和 top-\emph{p} 采样直接组合在一起。
+
+接下来，我们像代码清单 6.2 那样，在一个示例提示上调用该函数。
+
+\begin{codeboxt}{代码清单 6.5 使用温度缩放和 top-\emph{p} 采样生成采样轨迹}
+torch.manual_seed(0)
+
+raw_prompt = (
+    "Half the value of $3x-9$ is $x+37$. "
+    "What is the value of $x$?"
+)
+prompt = render_prompt(raw_prompt)
+
+token_ids, prompt_len, answer_text = sample_response(
+            model=model,
+            tokenizer=tokenizer,
+            prompt=prompt,
+            device=device,
+            max_new_tokens=512,
+            temperature=0.9,
+            top_p=0.9,
+        )
+
+print(answer_text)
+\end{codeboxt}
+
+之前，\texttt{generate\_text\_stream\_concat\_flex} 采样函数返回 \texttt{"} \texttt{\textbackslash boxed\{58\}}\texttt{"}\texttt{.}。现在 \texttt{sample\_response} 函数会在其回复中显式包含序列结束词元：\texttt{"} \texttt{\textbackslash boxed\{58\}\textless{}|endoftext|\textgreater{}}\texttt{"}。包含这个 \texttt{\textless{}|endoftext|\textgreater{} }词元并非严格必需，但它可以防止模型在非常长的训练运行中遗忘如何生成序列结束词元。
+
+我们可以多次调用 \texttt{sample\_response} 来生成不同的采样轨迹，稍后在实现完整训练循环时我们就会这样做。为了让这个 GRPO 演练示例保持简单、也更容易对照图 6.13 中的 GRPO 逐步概要来理解，我们这里改为假设模型产生了下面四个简短回复：
+
+\begin{codebox}
+rollouts = [
+    r"\boxed{83}",
+    r"The correct answer is \boxed{83}",
+    r"The final answer is 83",
+    r"We get \boxed{38}",
+]
+\end{codebox}
+
+\section{计算奖励}
+
+GRPO 流程的第二个阶段是为每条采样轨迹计算奖励，如图 6.14 所示。
+
+\myGraphic{0.92}{images/CH06_F14_Raschka2.png}{图 6.14 GRPO 流水线中的第二个阶段，为 LLM 在第一阶段生成的每条采样轨迹计算奖励。}
+
+奖励使用第 3 章的数学验证器计算，主要基于答案正确性。通过在下述代码清单的 \texttt{reward\_rlvr} 函数中设置 \texttt{fallback=None}，我们还隐式加入了一个格式约束。例如，一个答案只有在既正确、又以要求的 \texttt{\textbackslash boxed\{\}} 格式表达时，才会得到 \texttt{1.0} 的奖励。
+
+\begin{codeboxt}{代码清单 6.6 实现奖励函数}
+from reasoning_from_scratch.ch03 import (
+    extract_final_candidate, grade_answer
+)
+
+def reward_rlvr(answer_text, ground_truth):
+    extracted = extract_final_candidate(
+        answer_text, fallback=None  #1
+    )
+    if not extracted:
+        return 0.0
+    correct = grade_answer(extracted, ground_truth)
+    return float(correct)
+\end{codeboxt}
+{\noindent\small\textit{\#1 fallback=None 要求答案采用 \newline \textbackslash boxed\{\} 格式才会返回提取出的答案。}\par}
+
+由于模型只有在回答正确、且以 \texttt{\textbackslash boxed\{\}} 格式写出最终答案时才能获得非零奖励，我们便鼓励它学会给出正确\emph{且}格式规范的答案。
+
+让我们试用一下 \texttt{reward\_rlvr} 函数，把它应用到这些采样轨迹上。
+
+\begin{codeboxt}{代码清单 6.7 对所有采样轨迹应用奖励函数}
+rollout_rewards = []
+
+for answer in rollouts:
+    reward = reward_rlvr(answer_text=answer, ground_truth="83")
+    print(f"Answer: {answer!r}")
+    print(f"Reward: {reward}\n")
+    rollout_rewards.append(reward)
+\end{codeboxt}
+
+得到的输出如下：
+
+\begin{codebox}
+Answer: '\\boxed{83}'
+Reward: 1.0
+
+Answer: 'The correct answer is \\boxed{83}'
+Reward: 1.0
+
+Answer: 'The final answer is 83'
+Reward: 0.0
+
+Answer: 'We get \\boxed{38}'
+Reward: 0.0
+\end{codebox}
+
+如你所见，奖励函数按预期工作：只有当答案包含正确结果（\texttt{83}）并使用 \texttt{\textbackslash boxed\{\}} 格式时，才会给出 \texttt{1.0} 的奖励。
+
+注意，DeepSeek-R1 团队也尝试过在训练期间使用过程奖励模型为中间解题步骤打分。这些尝试没有成功，研究者得出的结论是：最好只依据最终答案正确性奖励来训练，而不使用中间奖励。
+
+\begin{mySidebar}{练习 6.1：加入能感知格式的奖励塑形}
+
+扩展本章的 \texttt{reward\_rlvr} 函数，使其能根据输出格式给予部分分。具体来说，修改奖励函数，使模型以要求的 \texttt{\textbackslash boxed\{\}} 格式给出正确答案时返回 \texttt{1.0}，答案正确但未使用方框格式时返回 \texttt{0.5}，其他情况返回 \texttt{0.0}。
+
+\end{mySidebar}
+
+\section{通过优势（值）从采样轨迹中准备学习信号}
+
+现在我们从奖励转向所谓的\emph{优势（值）}，如图 6.15 所示。奖励告诉我们每条采样轨迹表现得多好，而优势（值）刻画的是某条采样轨迹相对于同一提示所生成的其他采样轨迹表现如何。
+
+\myGraphic{0.92}{images/CH06_F15_Raschka2.png}{图 6.15 GRPO 的第三个阶段，根据各答案（采样轨迹）的正确性奖励计算优势值。}
+
+图 6.15 中所示的优势值由一个简单公式计算得到：
+
+\myGraphic{0.7}{images/eq-chapter-6-svg-eq-133.png}{}
+
+其中
+
+\begin{itemize}
+\item 𝑟𝑖 表示第 \emph{i} 条采样轨迹的奖励。
+\item 𝜇𝑟 是该组采样轨迹奖励的均值。
+\item σ𝑟 是相应的标准差。
+\item ϵ 是为数值稳定性而加入的一个小常数，用于避免除零错误。
+\end{itemize}
+
+在代码中，我们可以按如下方式实现优势值的计算。
+
+\begin{codeboxt}{代码清单 6.8 计算优势（值）}
+rewards = torch.tensor(rollout_rewards, device=device)
+advantages = (rewards - rewards.mean()) / (rewards.std() + 1e-4)
+print(rewards)
+print(advantages)
+\end{codeboxt}
+
+我们在上一节计算出的奖励是 \texttt{[1., 1., 0., 0.]}，相应的优势值是 \texttt{[0.8659, 0.8659, -0.8659, -0.8659]}。这些优势值刻画了组内哪些回复表现优于平均水平、哪些表现低于平均水平。
+
+\begin{myWarning}{注意}
+ GRPO 中的“GR”（组相对）指的是：GRPO 为每个提示生成多个答案（采样轨迹），并将它们相互比较以构造学习信号。\end{myWarning}
+
+你可能仍会疑惑：把奖励转换成优势值有什么意义？从实际角度看，优势值直接对策略更新过程中的梯度进行缩放。如果优势为正，梯度会提高产生该采样轨迹的动作的似然；如果为负，梯度会降低它们的似然。优势接近零的采样轨迹贡献非常小。
+
+\begin{mySidebar}{练习 6.2：零优势的情况}
+
+修改采样轨迹的奖励，使所有采样轨迹收到相同的奖励（例如把所有奖励都强制设为 \texttt{0.0} 或都设为 \texttt{1.0}）。运行优势值计算，验证得到的 GRPO 损失为零。在组相对策略优化中，这种行为为什么是合乎需要的？
+
+\end{mySidebar}
+
+\section{用序列对数概率为采样轨迹打分}
+
+我们计算了奖励，并由此得到了优势值。现在我们另起一个分支，从采样轨迹出发计算它们的对数概率（logprobs），如图 6.16 所示。如上一章所述，对数概率衡量在当前参数下模型认为每个生成词元的可能性有多大。
+
+\myGraphic{0.92}{images/CH06_F16_Raschka2.png}{图 6.16 GRPO 流水线中的第四个阶段，为每条采样轨迹计算对数概率。这与我们在上一章开发的对数概率打分器相关。}
+
+如图 6.16 所示，这些对数概率与优势值一起，构成了 GRPO 策略梯度损失的核心要素，我们稍后会实现它。
+
+在上一章（代码清单 5.8）中，我们实现了一个 \texttt{avg\_logprob\_answer} 函数，用于计算模型答案词元的逐词元对数概率。这些值是通过评估模型在当前参数下为每个生成词元赋予的似然而得到的。
+
+对回复取平均后，这些值通常被称为词元级对数概率，常用于为 LLM 输出打分。在这里采用平均更合适，因为它提供了长度归一化，使不同长度回复的分数可以相互比较。
+
+\begin{mySidebar}{词元级对数概率的数学定义}
+
+从数学上说，我们在上一章计算的词元级对数概率可以写成
+
+\end{mySidebar}
+
+\myGraphic{0.7}{images/eq-chapter-6-svg-eq-154.png}{}
+
+\begin{mySidebarBox}
+
+其中
+
+\begin{itemize}
+\item 𝑦1、𝑦2、…、𝑦𝑇 表示长度为 \emph{T} 的生成回复中的各个词元。
+\item 𝑦\textless{}t 表示此前已生成的所有词元。
+\item \emph{x }是输入的提示。
+\item \emph{W }表示模型的权重参数。
+\end{itemize}
+
+这个表达式的数学含义与上一章所用的一致；我们只是把 \emph{x} 换成 \emph{y}，以区分生成的输出词元与输入提示。
+
+\end{mySidebarBox}
+
+这里重复使用代码清单 5.8 中的 \texttt{avg\_logprob\_answer} 函数，为前面的 \texttt{prompt} 和 \texttt{answer\_text} 计算对数概率，以作示例。
+
+\begin{codeboxt}{代码清单 6.9 计算词元级对数概率（与第 5 章类似）}
+@torch.inference_mode()
+def avg_logprob_answer(model, tokenizer, prompt, answer, device="cpu"):
+
+    prompt_ids = tokenizer.encode(prompt)
+    answer_ids = tokenizer.encode(answer)
+    full_ids = torch.tensor(prompt_ids + answer_ids, device=device)
+
+    logits = model(full_ids.unsqueeze(0)).squeeze(0)
+    logprobs = torch.log_softmax(logits, dim=-1)
+
+    start = len(prompt_ids) - 1
+    end = full_ids.shape[0] - 1
+
+    t_idx = torch.arange(start, end, device=device)
+    next_tokens = full_ids[start + 1 : end + 1]
+    next_token_logps = logprobs[t_idx, next_tokens]
+
+    return torch.mean(next_token_logps).item()
+
+avg_logprob_val = avg_logprob_answer(
+                   model, tokenizer,
+                   prompt=prompt,
+                   answer=answer_text,
+                   device=device)
+print(avg_logprob_val)
+\end{codeboxt}
+
+返回结果是 \texttt{-0.061279296875}。
+
+在 GRPO 中，我们不使用平均后的词元级对数概率，而是使用序列级对数概率。这是因为 GRPO 为每条采样轨迹赋予单个奖励和优势值，它们作用于整个生成回复。直观地说，对数概率应当反映模型生成整个序列的可能性有多大，而不是每个词元的平均值。
+
+我们通过把所有生成词元的对数概率求和来计算序列级对数概率。（这个和对应在当前模型参数下生成完整回复的对数似然。）相比之下，对词元级对数概率取平均是按序列长度做归一化。虽然这种归一化在为不同长度的回复打分和比较时很有用，但它在策略优化中会无意中缩放学习信号，导致较长和较短的回复对更新的贡献不均衡。这类基于长度的缩放并不属于 GRPO 的原始形式，后者反而对整条采样轨迹使用序列级对数概率。在下一章改进算法时，我们会重新讨论词元级对数概率。
+
+我们可以把词元级、按长度归一化的分数转换为序列级对数概率：去掉取平均这一步，把代码清单 6.9 中的 \texttt{torch.mean(next\_token\_logps)} 换成 \texttt{torch.sum(next\_token\_logps)}。
+
+只要词元数量完全一致，也可以把平均对数概率乘以答案词元的数量来得到相同结果：
+
+\begin{codebox}
+sequence_logprob_val = avg_logprob_val * (
+    len(tokenizer.encode(answer_text))
+)
+print(sequence_logprob_val)
+\end{codebox}
+
+现在返回的是 \texttt{-16.239013671875}。
+
+这些序列级对数概率随序列长度 \emph{T} 线性变化，也就是说，较长的回复通常会得到更负的对数概率值。结果是，对于两个同样好的答案，优化会隐式偏好较短的那个，因为它在似然上代价更低。因此，求和后的对数概率会鼓励模型尽早停下，除非生成更长的回复能由更高的奖励证明其合理性。
+
+所以，如前所述，我们可以在该函数中把 \texttt{torch.mean} 替换为 \texttt{torch.sum}，从而得到序列级对数概率。由于我们在上一章用 \texttt{@torch.inference\_mode()} 装饰器以推理模式运行了该函数，我们需要去掉该装饰器重新定义它，这样 PyTorch 才能追踪梯度。
+
+此外，由于代码清单 6.4 中的 \texttt{sample\_response} 已经返回了 \texttt{token\_ids} 和 \texttt{prompt\_len}，我们可以去掉显式的分词步骤和 \texttt{full\_ids} 的构造，从而简化实现。
+
+\begin{codeboxt}{代码清单 6.10 计算序列级对数概率}
+def sequence_logprob_draft(model, token_ids, prompt_len):
+    logits = model(token_ids.unsqueeze(0)).squeeze(0).float()
+    logprobs = torch.log_softmax(logits, dim=-1)
+
+    start = prompt_len - 1         #1
+    end = token_ids.shape[0] - 1    #1
+
+    t_idx = torch.arange(start, end, device=token_ids.device)
+    next_tokens = token_ids[start + 1 : end + 1]
+    next_token_logps = logprobs[t_idx, next_tokens]
+
+    return torch.sum(next_token_logps) #2
+
+print(sequence_logprob_draft(model, token_ids, prompt_len))
+\end{codeboxt}
+{\noindent\small\textit{\#1 我们想要预测其下一词元概率的位置 \newline \#2 对答案词元的对数概率求和。}\par}
+
+产生如下输出：
+
+\begin{codebox}
+tensor(-16.2998, grad_fn=<SumBackward0>)
+\end{codebox}
+
+结果与我们之前得到的 \texttt{-16.2421875} 相近（差异来自浮点行为和舍入）。
+
+PyTorch 在内部构建一张计算图，记录施加到张量上的每个可微操作。\texttt{SumBackward0} 这一项表明，词元对数概率的求和是这张图的一部分，这意味着梯度可以经由序列级对数概率反向传播到模型参数。
+
+这正是我们稍后实现训练循环、通过反向传播更新模型权重时，策略优化所需要的东西。反向传播应用的是反向传播算法，它是深度学习中用于计算梯度和更新神经网络权重的标准方法。
+
+\begin{mySidebar}{PyTorch 计算图、梯度与反向传播}
+
+当模型产生输出时，PyTorch 会记录从模型参数通向该输出的每一个数学操作。这份记录称为\emph{计算图}。稍后我们执行反向传播时，PyTorch 用这张图来执行反向传播；也就是说，它计算梯度，描述模型参数的变化会如何影响最终结果。如果某个操作属于这张图的一部分，PyTorch 就能在训练期间通过它计算梯度。
+
+本章并不要求理解 PyTorch 的计算图，但如果你感兴趣，可以在我的教程 \href{https://sebastianraschka.com/teaching/pytorch-1h/\#3-seeing-models-as-computation-graphs}{https://sebastianraschka.com/teaching/pytorch-1h/\#3-seeing-models-as-computation-graphs} 中了解更多。
+
+\end{mySidebar}
+
+这个初版实现可行，但我们可以稍微简化它，并让它对 GPU 更高效。具体来说，我们可以避免显式构造索引范围，改用 \texttt{torch.gather} 直接选出与生成词元对应的对数概率。下面的代码清单给出了同一计算的更紧凑、更优化的版本，它产生完全相同的结果，同时更易读、执行更快。
+
+\begin{codeboxt}{代码清单 6.11 优化后的序列级对数概率代码}
+def sequence_logprob(model, token_ids, prompt_len):
+    logits = model(token_ids.unsqueeze(0)).squeeze(0).float()
+    logprobs = torch.log_softmax(logits, dim=-1)
+    selected = logprobs[:-1].gather(
+        1, token_ids[1:].unsqueeze(-1)
+    ).squeeze(-1)
+    return torch.sum(selected[prompt_len - 1:])
+
+print(sequence_logprob(model, token_ids, prompt_len))
+\end{codeboxt}
+
+与前一段代码一样，这返回 \texttt{tensor(-16.2998, grad\_fn=\textless{}SumBackward0\textgreater{})}。
+
+\begin{myWarning}{提示}
+ 我们本可以在 \texttt{sample\_response} 函数中直接计算这些对数概率，这样可以避免在 \texttt{sample\_response} 和 \texttt{sequence\_logprob} 两个函数中两次调用 \texttt{model(...)}，从而提升效率。\end{myWarning}
+
+最后，有了这个稳健且高效的序列级对数概率函数，我们就可以计算四条不同采样轨迹各自的对数概率了。
+
+\begin{codeboxt}{代码清单 6.12 计算所有采样轨迹的序列级对数概率}
+rollouts = [
+    r"\boxed{83}",
+    r"The correct answer is \boxed{83}",
+    r"The final answer is 83",
+    r"We get \boxed{38}",
+]
+
+rollout_logps = []
+
+for text in rollouts:
+    token_ids = tokenizer.encode(prompt + " " + text)
+    logprob = sequence_logprob(
+        model=model,
+        token_ids=torch.tensor(token_ids, device=device),
+        prompt_len=prompt_len,
+    )
+
+    print(f"Answer:  {text}")
+    print(f"Logprob: {logprob.item():.4f}\n")
+
+    rollout_logps.append(logprob)
+\end{codeboxt}
+
+打印结果如下：
+
+\begin{codebox}
+Answer:  \boxed{83}
+Logprob: -7.9243
+
+Answer:  The correct answer is \boxed{83}
+Logprob: -20.1546
+
+Answer:  The final answer is 83
+Logprob: -16.6130
+
+Answer:  We get \boxed{38}
+Logprob: -23.3677
+\end{codebox}
+
+如你所见，较短、较简洁的答案得到比更长或更啰嗦回复更高（不那么负）的序列级对数概率。例外是最后一个答案，它得到最低的分数。注意，这是唯一一个包含错误数值答案（\texttt{38} 而非 \texttt{83}）的答案，所以这从直觉上也说得通。
+
+总体而言，这说明了求和后的对数概率天然偏爱简洁的输出，这与它们在 GRPO 中于序列层面施加奖励和优势值时的作用是一致的。
+
+\section{通过 GRPO 损失从优势（值）到策略更新}
+
+现在我们来实现 GRPO 流水线的第五个阶段：把此前计算出的优势值和对数概率组合成策略梯度损失。随后的权重更新（第 6 阶段）我们稍后作为训练循环的一部分来实现，如图 6.17 所示。
+
+\myGraphic{0.92}{images/CH06_F17_Raschka2.png}{图 6.17 GRPO 流水线中的第五个阶段，计算我们将用于更新模型的策略梯度损失。第 6 阶段即模型权重更新，稍后会作为训练循环的一部分实现。}
+
+首先，我们把上一节的采样轨迹对数概率列表转换为 PyTorch 张量。然后，用每条采样轨迹的序列级对数概率乘以其对应的优势值，在采样轨迹上取均值，再取负号，从而计算策略梯度损失。由于 PyTorch 优化器的定义是\emph{最小化}损失，那些天然写成最大化问题的目标函数必须翻转符号。
+
+\begin{codeboxt}{代码清单 6.13 计算策略梯度损失}
+logps = torch.stack(rollout_logps)
+pg_loss =-(advantages.detach() * logps).mean()
+print(logps)
+print(pg_loss)
+\end{codeboxt}
+
+对数概率的打印结果如下：
+
+\begin{codebox}
+tensor([
+-7.9243, -20.1546, -16.6130, -23.3677],
+grad_fn=<StackBackward0>)
+\end{codebox}
+
+得到的策略梯度损失值如下：
+
+\begin{codebox}
+tensor(-2.5764, grad_fn=<NegBackward0>)
+\end{codebox}
+
+注意，我们对优势值使用了 \texttt{.detach()}，因为在策略更新期间它们被视为固定的学习信号。这可以防止梯度回流经过优势值的计算，确保只有影响对数概率的模型参数会被更新。
+
+在策略梯度方法中，我们想要最大化采样轨迹经优势值加权的对数概率，因为高优势采样轨迹的对数概率越高，策略就越好。把这个目标乘以 −1，就把最大化问题转换成了等价的最小化问题。最小化取负后的目标所产生的参数更新，与最大化原目标完全相同，同时还与 PyTorch 的优化器实现兼容。
+
+\begin{mySidebar}{最大化与最小化}
+
+为了用具体例子说明符号翻转，假设我们想要最大化的目标是一个简单的标量值 𝑓(𝑥) = 3。
+
+在最大化的视角下，值越大越好，所以 3 优于 2。而 PyTorch 优化器做的是最小化，所以它们会试图\emph{减小}这个值，这与我们的目标正好相反。
+
+现在假设我们翻转符号，把损失定义为 𝐿(𝑥) = –𝑓(𝑥) = –3。此时最小化 𝐿(𝑥) 就等价于最大化 𝑓(𝑥)。例如，如果 𝐿(𝑥) 从 −2 降到 −3，𝑓(𝑥) 就从 2 升到 3。
+
+\end{mySidebar}
+
+\begin{mySidebar}{策略梯度损失的数学定义}
+
+如果你觉得用数学记号来跟踪这些计算更容易，GRPO 中所用的策略梯度损失可以写成如下形式：
+
+\end{mySidebar}
+
+\myGraphic{0.7}{images/eq-chapter-6-svg-eq-209.png}{}
+
+\begin{mySidebarBox}
+
+其中，
+
+\begin{itemize}
+\item \emph{N }表示采样轨迹的数量。
+\item 𝑦𝑡(𝑖), …, 𝑦𝑇ᵢ(𝑖) 是第 \emph{i} 条长度为 𝑇𝑖 的生成回复中的各个词元。
+\item 𝑦\textless{}𝑡(𝑖) 表示该回复中此前已生成的所有词元。
+\item 𝑥(𝑖) 是对应的输入提示。
+\item 𝐴𝑖 是整条采样轨迹的优势值。
+\end{itemize}
+
+内层求和计算一条采样轨迹的序列级对数概率，而外层取平均则计算各采样轨迹经优势值加权的对数概率。
+
+\end{mySidebarBox}
+
+\section{把所有内容整合到一个 GRPO 函数中}
+
+至此，我们已经完成本章最具挑战性的部分，并逐一单独走过了 GRPO 的每个阶段。接下来，我们把图 6.18 所示的五个 GRPO 阶段组合成一个 \texttt{compute\_grpo\_loss} 函数，稍后作为完整训练循环的一部分使用。（注意，这里的“阶段”指的是基于我们逐步走通 GRPO 算法的方式而划分的 GRPO 损失计算的概念性组件；它不是外层优化循环中的训练步。）
+
+\myGraphic{0.92}{images/CH06_F18_Raschka2.png}{图 6.18 完整的 GRPO 工作流：（1）为提示生成多条采样轨迹，（2）为它们赋予正确性奖励，（3）把它们转换为组相对优势（值），（4）把它们与对数概率结合，以（5）计算策略梯度损失。损失的梯度（6）将在下一节计算，并用于更新模型。}
+
+下面的代码清单展示了 \texttt{compute\_grpo\_loss} 函数，它把图 6.18 中我们此前讨论过的所有阶段组合在一起。
+
+\begin{codeboxt}{代码清单 6.14 组合所有 GRPO 阶段}
+def compute_grpo_loss(
+    model,
+    tokenizer,
+    example,
+    device,
+    num_rollouts=2,
+    max_new_tokens=256,
+    temperature=0.8,
+    top_p=0.9,
+):
+    assert num_rollouts >= 2
+    roll_logps, roll_rewards, samples = [], [], []
+    prompt = render_prompt(example["problem"])
+
+    was_training = model.training
+    model.eval()
+
+    for _ in range(num_rollouts):
+
+        token_ids, prompt_len, text = sample_response(#1
+            model=model,
+            tokenizer=tokenizer,
+            prompt=prompt,
+            device=device,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            top_p=top_p,
+        )
+
+        reward = reward_rlvr(text, example["answer"])#2
+
+        logp = sequence_logprob(model, token_ids, prompt_len)#3
+
+        roll_logps.append(logp)
+        roll_rewards.append(reward)
+        samples.append(
+            {
+                "text": text,
+                "reward": reward,
+                "gen_len": token_ids.numel() - prompt_len,
+            }
+        )
+
+    if was_training:
+        model.train()
+
+    rewards = torch.tensor(roll_rewards, device=device)#4
+
+    advantages = (rewards - rewards.mean()) / (rewards.std() + 1e-4)#5
+
+    logps = torch.stack(roll_logps)#6
+
+    pg_loss = -(advantages.detach() * logps).mean()#7
+    loss = pg_loss  # 在下一章中我们会在此处加入 KL 项
+
+    return {
+        "loss": loss.item(),
+        "pg_loss": pg_loss.item(),
+        "rewards": roll_rewards,
+        "advantages": advantages.detach().cpu().tolist(),
+        "samples": samples,
+        "loss_tensor": loss,
+    }
+\end{codeboxt}
+{\noindent\small\textit{\#1 第 1 阶段：生成采样轨迹 \newline \#2 第 2.1 阶段：计算奖励 \newline \#3 第 4.1 阶段：计算对数概率 \newline \#4 第 2.2 阶段：收集所有奖励 \newline \#5 第 3 阶段：计算优势（值） \newline \#6 第 4.2 阶段：收集所有对数概率 \newline \#7 第 5 阶段：计算策略梯度损失}\par}
+
+\texttt{compute\_grpo\_loss} 函数相对而言不言自明，因为它遵循我们在前面各节手动实现的相同阶段。不过要注意，在第 1 阶段之后，代码直接进入第 2 阶段和第 4 阶段，而不是第 3 阶段和第 4 阶段。这纯粹是实现上的选择：通过避免多层嵌套的 \texttt{for} 循环来简化代码结构，同时保持逻辑上相同的操作顺序。
+
+还要注意，\texttt{pg\_loss}（策略梯度损失）与我们示例中的总损失相同。我有意在此省略了 KL 损失项；为完整起见，我们会在第 7 章加上它。如前所述，有报道称在省略 KL 损失项时，GRPO 在数学问题上往往表现更好，因此我们在这里采用这种简化的目标。
+
+接下来，让我们在 MATH 训练集的一个样例上试用新的 \texttt{compute\_grpo\_loss} 函数，以确保它能正常工作。为便于测试，我们只采样少量轨迹（\texttt{num\_rollouts=2}），并生成相对较少的词元（\texttt{max\_new\_tokens=256}）。该函数仍可能需要几秒钟才返回结果。
+
+\begin{codeboxt}{代码清单 6.15 在 MATH 训练样例上计算 GRPO 各阶段}
+torch.manual_seed(123)
+
+stats = compute_grpo_loss(
+    model=model,
+    tokenizer=tokenizer,
+    example=math_train[4],
+    device=device,
+    num_rollouts=2,
+    max_new_tokens=256,
+    temperature=0.8,
+    top_p=0.9
+)
+
+pprint(stats)
+\end{codeboxt}
+
+输出如下：
+
+\begin{codebox}
+{'advantages': [0.0, 0.0],
+ 'loss': -0.0,
+ 'loss_tensor': tensor(-0., grad_fn=<NegBackward0>),
+ 'pg_loss': -0.0,
+ 'rewards': [0.0, 0.0],
+ 'samples': [{'gen_len': 4, 'reward': 0.0, 'text': ' 14<|endoftext|>'},
+             {'gen_len': 256,
+              'reward': 0.0,
+              'text': ' 4\n'
+                      'To solve the problem, let's break it down step by step'
+                      '...'}
+\end{codebox}
+
+从 \texttt{'}\texttt{samples}\texttt{'} 字段中的 \texttt{'}\texttt{rewards}\texttt{'} 和 \texttt{'}\texttt{text}\texttt{'} 条目可以看出，模型回答错误。如 6.4 节所述，正确答案必须包含 \texttt{\textbackslash boxed\{6\}}。由于该条件未满足，奖励为零，从而优势值为零、损失也为零。在这种情况下，如果我们在训练模型，梯度就会是零，模型参数不会被更新。
+
+\section{实现 GRPO 训练循环}
+
+现在我们已经准备好实现完整 GRPO 训练循环所需的全部组件。在本章的最后一节，我们将把所有内容整合起来，使用 GRPO 算法通过 RLVR 训练模型，如图 6.19 所示。
+
+\myGraphic{0.92}{images/CH06_F19_Raschka2.png}{图 6.19 我们现在来实现训练循环以更新模型权重。}
+
+训练循环由八个主要阶段组成，如图 6.20 所示。其中大多数阶段是深度神经网络（包括 LLM）典型 PyTorch 训练循环的标准组件。唯一专属于推理模型的阶段是第 4 阶段：在这里我们计算 GRPO 损失，而不是许多其他类型的深度神经网络以及 LLM 预训练中所用的标准分类损失。
+
+\myGraphic{0.92}{images/CH06_F20_Raschka2.png}{图 6.20 训练循环概要。整体结构遵循标准的深度学习训练循环。关键区别在于损失的计算方式：不是标准的有监督目标，而是通过 GRPO 各阶段（第 4 阶段）得到损失。}
+
+在逐一讨论这八个阶段之前，先看看它们在代码中如何实现会更有帮助。代码清单 6.16 展示了图 6.20 所示的完整训练循环。
+
+\begin{codeboxt}{代码清单 6.16 实现 RLVR 训练循环}
+import time
+
+def train_rlvr_grpo(
+    model,
+    tokenizer,
+    math_data,
+    device,
+    steps=None,
+    num_rollouts=2,
+    max_new_tokens=256,
+    temperature=0.8,
+    top_p=0.9,
+    lr=1e-5,
+    checkpoint_every=50,
+    checkpoint_dir=".",
+    csv_log_path=None,
+
+):
+    if steps is None:
+        steps = len(math_data)
+
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr)#1
+    model.train()
+    current_step = 0
+
+    if csv_log_path is None:
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        csv_log_path = f"train_rlvr_grpo_metrics_{timestamp}.csv"
+    csv_log_path = Path(csv_log_path)
+
+    try:
+
+        for step in range(steps):#2
+
+            optimizer.zero_grad()#3
+
+            current_step = step + 1
+            example = math_data[step % len(math_data)]
+
+            stats = compute_grpo_loss(#4
+                model=model,
+                tokenizer=tokenizer,
+                example=example,
+                device=device,
+                num_rollouts=num_rollouts,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                top_p=top_p,
+            )
+
+            stats["loss_tensor"].backward()#5
+
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)#6
+
+            optimizer.step()#7
+
+            reward_avg = torch.tensor(stats["rewards"]).mean().item()#8
+            step_tokens = sum(
+                sample["gen_len"] for sample in stats["samples"]
+            )
+            avg_response_len = (
+                step_tokens / len(stats["samples"]) if stats["samples"] else 0.0
+            )
+            append_csv_metrics(
+                csv_log_path, current_step, steps,
+                stats["loss"], reward_avg, avg_response_len,
+            )
+            print(
+                f"[Step {current_step}/{steps}] "
+                f"loss={stats['loss']:.4f} "
+                f"reward_avg={reward_avg:.3f} "
+                f"avg_resp_len={avg_response_len:.1f}"
+            )
+
+            if checkpoint_every and current_step % checkpoint_every == 0:#9
+                ckpt_path = save_checkpoint(
+                    model=model,
+                    checkpoint_dir=checkpoint_dir,
+                    step=current_step,
+                )
+                print(f"Saved checkpoint to {ckpt_path}")
+
+    except KeyboardInterrupt:#10
+        ckpt_path = save_checkpoint(
+            model=model,
+            checkpoint_dir=checkpoint_dir,
+            step=max(1, current_step),
+            suffix="interrupt",
+        )
+        print(f"\nKeyboardInterrupt. Saved checkpoint to {ckpt_path}")
+        return model
+
+    return model
+
+def save_checkpoint(model, checkpoint_dir, step, suffix=""):
+    checkpoint_dir = Path(checkpoint_dir)
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    suffix = f"-{suffix}" if suffix else ""
+    ckpt_path = (
+        checkpoint_dir /
+        f"qwen3-0.6B-rlvr-grpo-step{step:05d}{suffix}.pth"
+    )
+    torch.save(model.state_dict(), ckpt_path)
+    return ckpt_path
+
+def append_csv_metrics(#11
+    csv_log_path, step_idx, total_steps,
+    loss, reward_avg, avg_response_len,
+):
+    if not csv_log_path.exists():
+        csv_log_path.write_text(
+            "step,total_steps,loss,reward_avg,avg_response_len\n",
+            encoding="utf-8",
+        )
+    with csv_log_path.open("a", encoding="utf-8") as f:
+        f.write(
+            f"{step_idx},{total_steps},{loss:.6f},{reward_avg:.6f},"
+            f"{avg_response_len:.6f}\n"
+        )
+\end{codeboxt}
+{\noindent\small\textit{\#1 第 1 阶段：初始化优化器（模型已在函数外部初始化） \newline \#2 第 2 阶段：遍历训练步 \newline \#3 第 3 阶段：重置损失梯度（在每一步开始时执行是最佳实践） \newline \#4 第 4 阶段：计算 GRPO 损失 \newline \#5 第 5 阶段：反向传播以计算损失梯度 \newline \#6 裁剪过大的梯度以提升训练稳定性 \newline \#7 第 6 阶段：使用损失梯度更新模型权重 \newline \#8 第 7 阶段：收集奖励、平均回复长度和损失 \newline \#9 第 8 阶段：保存模型检查点 \newline \#10 如果提前中断训练，则保存一个模型检查点 \newline \#11 用于把结果保存到 CSV 文件的工具函数}\par}
+
+该函数使用 GRPO 实现了完整的 RLVR 训练循环。如前所述，除了第 4 阶段（GRPO 损失计算）之外，其结构与常规 PyTorch 训练循环一致：重置梯度、对损失做反向传播、可选地裁剪梯度、通过优化器步更新参数、记录指标，并定期保存检查点。（我们保存模型检查点，即模型权重的快照，以便之后加载、评估和使用它们，我们会在下一节讨论。）
+
+\begin{myWarning}{提示}
+ 关于在 PyTorch 中训练神经网络的一般性介绍，参见我的文章《PyTorch in One Hour: From Tensors to Training Neural Networks on Multiple GPUs》的 3-8 节（\href{https://sebastianraschka.com/teaching/pytorch-1h/}{https://sebastianraschka.com/teaching/pytorch-1h/}）。\end{myWarning}
+
+与其他标准训练循环相比，这里的关键区别在于损失是如何构造的。训练信号不是用于大多数神经网络（包括分类器和 LLM 预训练）的标准有监督目标，而是通过 GRPO 算法作为 RLVR 过程的一部分计算出来的。
+
+现在让我们运行代码来训练模型。前面我们把 PyTorch 设备硬编码为 \texttt{"}\texttt{cpu}\texttt{"}，以使所有中间结果与书中所示的结果尽量一致，因为 \texttt{"}\texttt{mps}\texttt{"} 和 \texttt{"}\texttt{cuda}\texttt{"} 设备可能引入微小的浮点差异。不过，在 CPU 上训练非常慢。
+
+为方便起见，下面的代码清单包含两行代码，它们会在调用 \texttt{train\_rlvr\_grpo()} 函数之前自动选择并激活合适的设备。例如，只要运行下面代码清单中的代码，它就会自动切换到 \texttt{"}\texttt{cuda}\texttt{"} 或 \texttt{"}\texttt{mps}\texttt{"}。
+
+\begin{codeboxt}{代码清单 6.17 训练模型}
+device = get_device()
+model.to(device)
+
+torch.manual_seed(0)
+
+train_rlvr_grpo(
+    model=model,
+    tokenizer=tokenizer,
+    math_data=math_train,
+    device=device,
+    steps=50,
+    num_rollouts=4,
+    max_new_tokens=512,
+    temperature=0.8,
+    top_p=0.9,
+    lr=1e-5,
+    checkpoint_every=5,
+    checkpoint_dir=".",
+)
+\end{codeboxt}
+
+在查看结果之前，我们先简要谈谈这些设置。\texttt{temperature} 和 \texttt{top\_p} 被设在一个常见范围内，既能促使答案有一定的多样性，又能为该模型生成连贯的文本。你可以修改这些设置，看看它们如何影响结果（常用范围是 0.7-0.9）。
+
+尽管数据集包含 12,000 条记录，步数却相对较少，只有 50 步。这纯粹是为了让运行时间保持在合理范围内，该值可以增大。不过，即便只有 50 步，也足以取得不错的结果。
+
+学习率（\texttt{lr}）可以调整，但它已处于合理范围，效果良好。
+
+采样轨迹数量（\texttt{num\_rollouts=4}）和允许的词元数（\texttt{max\_new\_tokens=512}）都相对较小，以减少资源需求。如果你遇到内存不足错误，可以进一步调低这些值，例如出于测试目的设为 \texttt{num\_rollouts=2} 和 \texttt{max\_new\_tokens=64}。
+
+在当前的 \texttt{checkpoint\_every=5} 设置下，模型每 5 步保存一次，每个检查点约需 1.5 GB 磁盘空间。对于更长时间的训练，我建议把这个数字设为 50 或 100。这里故意设得很小，以便测试。另请注意，如果训练运行被手动中断，例如用 \texttt{"}\texttt{Interrupt the kernel}\texttt{"} 按钮中断 Jupyter notebook 的执行，应该额外创建一个检查点。
+
+让我们简要看一下本次运行的输出（我在第 7 步中断了这次 50 步的运行）：
+
+\begin{codebox}
+Using Apple Silicon GPU (MPS)
+[Step 1/50] loss=-0.0000 reward_avg=0.000 avg_resp_len=88.0
+[Step 2/50] loss=-0.0000 reward_avg=0.000 avg_resp_len=7.5
+[Step 3/50] loss=-0.0000 reward_avg=0.000 avg_resp_len=6.5
+[Step 4/50] loss=0.0909 reward_avg=0.250 avg_resp_len=6.5
+[Step 5/50] loss=1.1001 reward_avg=0.500 avg_resp_len=300.5
+Saved checkpoint to qwen3-0.6B-rlvr-grpo-step00005.pth
+
+KeyboardInterrupt. Saved checkpoint to qwen3-0.6B-rlvr-grpo-step00006-interrupt.pth
+\end{codebox}
+
+可以看到，损失和奖励值都在波动，这在 RL 训练中是正常的。
+
+我们打印了平均奖励，它表示采样回复中正确答案所占的比例。在 \texttt{num\_rollouts=4} 的设置下，\texttt{reward\_avg} 为 0.5 意味着 4 条采样轨迹中有 2 条获得了正奖励。类似地，0.25 和 0.0 分别表示有 1 条或 0 条正确回复。
+
+损失值不应被过度解读。\texttt{reward\_avg=0.000} 的步会产生接近零的损失，因为所有采样轨迹收到相同的奖励，导致组相对优势（值）消失，几乎没有梯度信号。较大的损失幅值，例如第 3 步（见前面输出中的第 4 行），只是反映了采样轨迹之间更大的相对差异，这在 GRPO 类目标中是典型的，尤其在训练初期。
+
+理想情况下，我们希望随时间看到两个主要趋势：
+
+\begin{enumerate}
+\item 当在许多步上取平均时，平均奖励应上升，因为模型学会生成更准确的回复。
+\item 推理准确率应提升（我们会在下一节评估这一点）。
+\end{enumerate}
+
+本书的在线代码中包含该脚本的一个稍复杂版本，它还有一个选项，可以定期在 MATH-500 测试数据集的子集上评估模型，以查看模型在目标任务上是否在进步：\href{https://github.com/rasbt/reasoning-from-scratch/tree/main/ch06/02\_rlvr\_grpo\_scripts\_intro}{https://github.com/rasbt/reasoning-from-scratch/tree/main/ch06/02\_rlvr\_grpo\_scripts\_intro}。
+
+\begin{mySidebar}{批量训练}
+
+RL 可能相当耗费资源，因为每个训练步我们都要让 LLM 生成多条（很长的）采样轨迹。因此，本实现不支持批量处理。
+
+如果你可以使用多块 GPU，可以用这份代码的可选版本，它支持批量和多 GPU：\href{https://github.com/rasbt/reasoning-from-scratch/tree/main/ch06/02\_rlvr\_grpo\_scripts\_intro}{https://github.com/rasbt/reasoning-from-scratch/tree/main/ch06/02\_rlvr\_grpo\_scripts\_intro}。这个版本训练模型更快。
+
+\end{mySidebar}
+
+\section{加载并评估保存的模型检查点}
+
+现在我们讨论如何加载上一节 RLVR 训练运行中保存的检查点（见图 6.21）。我们还会在 MATH-500 数据集上评估模型。
+
+\myGraphic{0.92}{images/CH06_F21_Raschka2.png}{图 6.21 我们现在来加载保存的模型检查点并对其进行评估。}
+
+保存的检查点可以用第 2 章介绍的 PyTorch 状态字典（state dict）方式加载，其中 \texttt{model\_path} 指向对应的 .pth 检查点文件：
+
+\begin{codebox}
+model.load_state_dict(torch.load("qwen3-0.6B-rlvr-grpo-step00050.pth"))
+\end{codebox}
+
+\begin{mySidebar}{下载 RLVR 检查点}
+
+如果你因为运行成本而不想在本机运行 GRPO 训练循环，可以改为下载我预训练好的检查点。这些检查点既可以手动获取，也可以直接在 Python 中用下面的辅助函数获取；该函数会下载选定的检查点，供评估或进一步实验使用：
+
+\begin{codebox}
+from reasoning_from_scratch.qwen3 import download_qwen3_grpo_checkpoints
+download_qwen3_grpo_checkpoints(grpo_type="no_kl", step="00050")
+\end{codebox}
+
+注意，该检查点是用与代码清单 6.17 类似的设置创建的，只是把 \texttt{num\_rollouts=4} 改成了 \texttt{num\_rollouts=8}。
+
+\end{mySidebar}
+
+这些检查点与第 3 章介绍的模型评估工具完全兼容，这让我们能用同一套 MATH-500 验证流水线来评估经 RL 训练的模型。
+
+为方便起见，你可以复用第 3 章附加材料中提供的评估脚本（\href{https://github.com/rasbt/reasoning-from-scratch/blob/main/ch03/02\_math500-verifier-scripts/evaluate\_math500.py}{https://github.com/rasbt/reasoning-from-scratch/blob/main/ch03/02\_math500-verifier-scripts/evaluate\_math500.py}），通过指定所需的检查点路径在 MATH-500 数据集上运行评估。例如，要评估 \texttt{qwen3-0.6B-rlvr-grpo-step00050.pth } 检查点文件，可以按如下方式运行上述脚本：
+
+\begin{codebox}
+uv run evaluate_math500.py \
+--dataset_size 500 \
+--which_model base \
+--checkpoint_path "qwen3-0.6B-rlvr-grpo-step00050.pth"
+\end{codebox}
+
+（如果你不是 \texttt{uv} 用户，请把 \texttt{uv run} 替换为 \texttt{python}。）
+
+表 6.1 将原始基础模型与推理模型（第 1、2 行）同我们在本章通过 GRPO 训练的基础模型（第 3-5 行）进行了比较。
+
+\begin{table}[htbp]
+\centering\small
+\centering
+\caption{表 6.1 不同基础模型与推理模型的 MATH-500 任务准确率}
+\begin{tabularx}{\linewidth}{@{}c@{}XXXXXX}
+\toprule
+ & 方法 & 步数 & 最大词元数 & 采样轨迹数 & 准确率 & 平均词元数 \\
+1 & 基础模型（第 3 章） & - & - & - & 15.2\% & 78.85 \\
+2 & 推理模型（第 3 章） & - & - & - & 48.2\% & 1369.79 \\
+3 & GRPO（本章） & 50 & 256 & 4 & 43.2\% & 560.22 \\
+4 & GRPO（本章） & 50 & 512 & 4 & 45.6\% & 579.81 \\
+5 & GRPO（本章） & 50 & 512 & 8 & 47.4\% & 586.11 \\ \bottomrule
+\end{tabularx}
+\end{table}
+
+表 6.1 中的准确率列指的是我们在第 3 章使用的完整 500 样本 MATH-500 数据集上的准确率。
+
+最大词元数列表示训练期间每条采样轨迹允许的词元数量。如果该数字为 512，就会促使 LLM 在这个 512 词元的上限内给出最终的方框答案；否则它在训练期间不会获得奖励。评估代码以 2,048 的最大词元上限运行，允许 LLM 在评估时生成更长的回复。
+
+平均词元数列展示了在 MATH-500 数据集上评估时的平均回复长度。如你所见，与参考推理模型（第 2 行）相比，我们的 GRPO 模型平均生成的回复更短，这在意料之中，因为训练时有词元长度限制。
+
+注意，DeepSeek-R1 团队观察到，随着模型开始写出中间（思维链）解释，回复会在训练过程中变长。为了使准确率最大化，训练时不把词元长度限制得太紧是合理的。更长的词元长度——尤其是与多条采样轨迹结合时——需要更多计算资源，这就是本章将其上限设得较低的原因。
+
+如表 6.1 所示，通过 GRPO 训练推理模型得到了 47.4\% 的准确率（第 5 行），接近官方 Qwen3 0.6B 推理模型在 MATH-500 上的准确率。通过增加回复长度、为每个提示采样更多轨迹、训练更多步，模型的准确率还可以进一步提升。下一章将介绍用于监控和改进 GRPO 训练结果的实用技巧与技术。
+
+我们只训练了模型 50 步，而这似乎已经足以在基础模型中解锁推理行为。在我的实验中，训练更久并不一定能提升性能，甚至可能降低准确率，因为原始 GRPO 形式在长时间训练中可能不稳定。
+
+同样值得记住的是，本章实现的是不含 KL 正则化项的简化 GRPO 变体。在下一章，我们会回到完整的 GRPO 目标，把 KL 项加回来，并讨论让训练在长时间运行中更稳定的常见改进。
+
+如果你感兴趣，可以在 \href{https://huggingface.co/rasbt/qwen3-from-scratch-grpo-checkpoints/tree/main/grpo\_original\_no\_kl}{https://huggingface.co/rasbt/qwen3-from-scratch-grpo-checkpoints/tree/main/grpo\_original\_no\_kl} 找到并下载从 50 到 9,000 步的更多检查点。
+
+\section{小结}
+
+\begin{itemize}
+\item 强化学习（RL）可用于根据人类偏好标签和可验证奖励来训练 LLM。
+\item RL 通常作为后训练应用于预训练基础模型之上，并且可以插入到 LLM 流水线的不同阶段，包括推理训练和偏好调优。
+\item 基于人类反馈的强化学习（RLHF）通过两阶段设置来优化人类偏好：先根据排序后的回复训练奖励模型，再用奖励分数更新 LLM。
+\item 基于可验证奖励的强化学习（RLVR）通过用确定性的、自动计算的验证器（例如数学答案检查）取代学习得到的奖励模型，简化了 RLHF。
+\item GRPO 是一种策略优化算法，它把验证器奖励转化为参数更新。由于 GRPO 直接用序列级奖励优化模型，无需单独的价值模型，因此特别方便。
+\item 对 LLM 而言，GRPO 比其他 RL 算法更节省资源，因为它避免训练单独的价值模型，而是从一组采样轨迹内部的比较中获取学习信号。
+\item “采样轨迹”（rollout）指的是模型针对一个提示给出的完整答案（补全）；奖励、优势（值）和对数概率都在后续步骤中根据这条采样轨迹计算。
+\item 奖励由验证器计算，只有当最终答案既正确、又能以要求的格式（如 \texttt{"}\texttt{\textbackslash boxed\{\}}\texttt{"}）被提取出来时，才赋予奖励。
+\item 原始奖励通过把每条采样轨迹的奖励相对于组均值和标准差做归一化，转化为优势值。
+\item GRPO 还依赖序列级对数概率，它通过对生成答案词元的词元对数概率求和得到。
+\item 序列对数概率与优势值一起，构成了 GRPO 中核心的策略梯度目标。
+\item 完整的 GRPO 损失计算被整合到单个函数中，它完成采样轨迹采样、奖励计算、优势值计算、对数概率计算和策略梯度损失计算。
+\item 外层的训练循环是标准的深度学习循环，关键区别在于损失来自 GRPO，而不是传统的分类损失。
+\item 训练非常耗费资源，因为每一步都需要生成多条、可能很长的采样轨迹，但即便很短的 GRPO 运行也能把 MATH-500 准确率从 15\% 提升到 47\%。
+\end{itemize}

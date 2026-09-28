@@ -1,0 +1,1130 @@
+\mySmallsection{本章内容涵盖}
+\begin{itemize}
+\item 为使用 LLM 搭建代码环境
+\item 使用分词器为 LLM 准备输入文本
+\item 用预训练 LLM 生成文本的分步流程
+\item 加速 LLM 文本生成的缓存与编译技术
+\end{itemize}
+
+上一章中，我们讨论了\emph{传统大语言模型}（LLM）与\emph{推理模型}的区别。我们还介绍了几种能够提升 LLM 推理能力的技术。这些技术通常应用在传统（基础）LLM 之上。
+
+本章中，我们将通过加载一个预训练基础模型，为后续章节打下基础，如图 2.1 所示。前面我们讨论过，推理方法通常是在常规后训练阶段之后加入的。不过，从基础模型出发更容易看出哪些能力来自推理方法本身。本章中的传统 LLM 是一种非推理 LLM，更确切地说，是一个预训练基础模型，而不是经过指令微调或偏好调优的助手。
+
+\myGraphic{0.92}{images/CH02_F01_Raschka2.png}{图 2.1 开发推理模型的四个主要阶段。本章聚焦于第 1 阶段：加载传统 LLM 并实现文本生成功能。}
+
+除了搭建编码环境和加载预训练 LLM，我们还将学习如何使用\emph{分词器}为模型准备文本输入。如图 2.1 所示，我们还会实现一个文本生成函数，从而能够实际用 LLM 生成文本。这一功能将在后续章节中被使用并加以改进。
+
+\section{介绍用于文本生成的 LLM}
+
+本章使用的 LLM 是一个只经过预训练的基础模型，但它已经能够生成连贯的文本，有时还能遵循基本指令。图 2.2 总结了 LLM 文本生成流水线的各个组成部分，本章后文会更详细地讨论并实现这些步骤。
+
+\myGraphic{0.92}{images/CH02_F02_Raschka2.png}{图 2.2 LLM 根据用户查询（输入文本）生成回复（输出文本）的概览}
+
+\begin{myWarning}{注意}
+ 按照惯例，涉及 LLM 等神经网络的示意图都按垂直方向绘制和阅读，从底部（输入）到顶部（输出）。箭头表示信息在模型中向上流动。\end{myWarning}
+
+如果你此前没有编写过 LLM，也没有以编程方式使用过 LLM，本章将带你了解文本生成过程是如何运作的。我们不会深入 LLM 的内部细节，比如注意力机制和其他架构组件；这些内容是我另一本书《从零构建大语言模型》的主题。阅读本书并不需要理解这些内部细节；如果你很好奇，可以之后再学习。如果你已经读过我那本书，本章同样有帮助，因为它新增了关于加速推理以及其他实用优化的内容。
+
+在开始实现图 2.2 所示的各个组件（包括输入准备、加载 LLM 以及生成文本）之前，我们需要先搭建好编码环境。
+
+\section{搭建编码环境}
+
+我们将介绍两种搭建 Python 编码环境的主要方式，以便跟着本书的示例练习：一种是简单的基于 \texttt{pip} 的方式，另一种是基于 \texttt{uv} 的工作流。建议先通读本节，再决定哪种方式最适合你。如果你已经搭好了 Python 环境（Python 3.10 或更高版本），安装依赖最简单的方式是在终端里使用 Python 的包安装器（\texttt{pip}）。如果你已经从出版社网站下载了代码，可以用 \texttt{requirements.txt} 文件来安装本书所需的 Python 库：
+
+\begin{codebox}
+pip install -r requirements.txt
+\end{codebox}
+
+或者，如果想直接安装所需的包而不下载 \texttt{requirements.txt} 文件，可以使用以下命令：
+
+\begin{codebox}
+pip install -r https://raw.githubusercontent.com/\
+rasbt/reasoning-from-scratch/refs/heads/main/requirements.txt
+\end{codebox}
+
+\begin{mySidebar}{本章用到的 Python 包}
+
+如果你只想安装本章用到的包，可以从下面这条命令开始：
+
+\begin{codebox}
+pip install torch>=2.10.0 tokenizers>=0.22.2 reasoning-from-scratch
+\end{codebox}
+
+PyTorch 的安装可能因平台和硬件而异，尤其是在你需要 GPU 加速时。如果前面的命令没有为你的系统安装正确的版本，建议使用 PyTorch 官方网站上的安装选择器（\href{https://pytorch.org/get-started/locally/}{https://pytorch.org/get-started/locally/}），然后单独安装其余包：
+
+\begin{itemize}
+\item \texttt{torch} 指 PyTorch，一个广泛使用的深度学习库，提供了构建和训练神经网络的工具。
+\item \texttt{tokenizers} 是一个提供高效分词算法的库，用于为 LLM 准备输入数据。
+\item \texttt{reasoning-from-scratch} 是我为本书开发的定制库。它包含各章使用的所有代码示例，以及我们将会用到的一些额外工具函数。
+\end{itemize}
+
+\end{mySidebar}
+
+虽然 \texttt{pip} 是安装 Python 包的标准方式，但我更倾向于使用被广泛推荐的 \texttt{uv}——一个 Python 包与项目管理器。和许多人一样，我现在推荐 \texttt{uv}，因为它比 \texttt{pip} 快得多，依赖解析也更可靠。它还会自动创建隔离环境，并自带 Python 可执行文件（不过如果系统已经装了兼容版本，就会使用系统 Python），所以如果你还没在系统上安装 Python，它是一个很好的选择。图 2.3 概述了从安装 \texttt{uv} 到准备执行本章代码的四个步骤。
+
+\myGraphic{0.92}{images/CH02_F03_Raschka2.png}{图 2.3 在 macOS 终端中安装并使用 uv Python 包与项目管理器}
+
+图 2.3 展示了在 macOS 终端中安装和使用 \texttt{uv} 的过程，不过它也支持 Linux 和 Windows：
+
+\begin{enumerate}
+\item 要安装 \texttt{uv}，请从官方网站运行适用于你操作系统的安装程序：\href{https://docs.astral.sh/uv/getting-started/installation/}{https://docs.astral.sh/uv/getting-started/installation/}。
+\item 接下来，克隆 GitHub 仓库：
+\end{enumerate}
+
+\begin{codebox}
+git clone --depth 1 https://github.com/rasbt/reasoning-from-scratch.git
+\end{codebox}
+
+这里的 \texttt{--depth 1} 选项告诉 \texttt{git} 执行浅克隆，也就是只下载代码的最新版本，而不带完整的版本历史。这样下载更快，占用的空间也更少。
+
+如果你没有安装 \texttt{git}，可以从出版社网站手动下载源码仓库，或者在浏览器中打开这个链接：\href{https://github.com/rasbt/reasoning-from-scratch/archive/refs/heads/main.zip}{https://github.com/rasbt/reasoning-from-scratch/archive/refs/heads/main.zip}（下载后解压）。
+
+\begin{enumerate}
+\item 3. 在终端中，进入 \texttt{reasoning-from-scratch} 文件夹。
+\item 4. 在 \texttt{reasoning-from-scratch} 文件夹内，执行
+\end{enumerate}
+
+\begin{codebox}
+uv run jupyter lab
+\end{codebox}
+
+这条命令会启动 JupyterLab，在其中可以打开一个空白的 Jupyter notebook 来输入并运行代码，也可以打开第 2 章的 notebook，其中包含本章涉及的全部代码。（无需事先创建或激活虚拟环境。）
+
+Python 脚本文件可以通过 \texttt{uv} \texttt{run} \texttt{script-name.py.} 来执行。这条命令还会建立本地虚拟环境（通常位于隐藏的 \texttt{.venv/} 文件夹中），并自动从 \texttt{reasoning-from-scratch} 文件夹中的 \texttt{pyproject.toml} 文件安装所有依赖，因此无需再通过 requirements 文件手动安装代码依赖。不过，如果你打算安装额外的包，可以使用以下命令：
+
+\begin{codebox}
+uv add packagename
+\end{codebox}
+
+如果需要，补充代码仓库的 \texttt{ch02} 子文件夹中提供了更多安装说明和细节。
+
+\section{了解硬件需求与建议}
+
+你可能听说过，训练 LLM 非常昂贵。对于领先的 LLM 公司来说，在加入任何推理技术之前，训练一个新的基础模型 LLM，计算成本从低端的 100 万至 1000 万美元，到高端的 5000 万美元以上，都不罕见。
+
+例如，作为 DeepSeek R1 推理系统基础检查点的 DeepSeek V3 模型，是在 2048 块 NVIDIA H800 GPU 上训练约 11 周完成的，估计成本为 550 万美元。（DeepSeek V3 是近期少数完全公开计算披露的模型之一。）根据技术报告，最终训练运行使用了 1480 万 GPU 小时的计算量。能耗约为 620 MWh，大致相当于一个普通美国家庭 55 年的用电量。
+
+这样的资源需求和高昂成本，对我和大多数读者来说都无法承担。因此，我们将使用一个相对较小（但能力尚可）的预训练 LLM，并在其之上实现推理技术。这个较小的 LLM 是一个缩小版，但除此之外，它的架构与当代最先进的模型相同。我们将应用的推理方法与更大的 LLM 所用的相同。区别在于，较小的 LLM 能让我们以低成本的方式探索这些方法。
+
+打个比方，假设你想了解汽车是如何运作的。如果你是汽车新手，大概不会一上来就造一台昂贵的法拉利。你会从更基础的车型开始，比如大众甲壳虫，它同样能让你学到很多关于发动机和变速箱工作原理的知识。事实上，我甚至认为，摆弄一台更简单的车反而能帮你\emph{更好}地理解发动机和变速箱的工作原理，因为它没有昂贵车型那些复杂的精细设计。
+
+虽然本书使用的是相对较小的模型，但使用、开发和运用这些推理技术仍然很耗费算力。后面几章（例如第 5\textasciitilde{}8 章）中的技术将受益于 GPU。你可以在 Python 中运行下面的 PyTorch 代码，检查你的电脑是否有 PyTorch 支持的 GPU：
+
+\begin{codebox}
+import torch
+
+print(f"PyTorch version {torch.__version__}")
+
+if torch.cuda.is_available():
+    print(f"CUDA/ROCm GPU: {torch.cuda.get_device_name(0)}")
+
+elif torch.xpu.is_available():
+    print(f"Intel GPU: {torch.xpu.get_device_name(0)}")
+
+elif torch.backends.mps.is_available():
+    print("Apple Silicon GPU")
+
+else:
+    print("Only CPU")
+\end{codebox}
+
+根据你的机器不同，这段代码可能返回如下结果：
+
+\begin{codebox}
+PyTorch version 2.10.0
+Only CPU
+\end{codebox}
+
+如果你的机器没有 GPU 来运行这些代码，也不必担心。第 2\textasciitilde{}5 章在 CPU 上就能在合理时间内运行。对于某些章节，如果检测到可用的 NVIDIA GPU，代码会自动使用它；否则就会在 CPU 上运行（如果某一节或某一章建议使用 Apple Silicon GPU，则会用它）。我会在相关的章节中提供更多信息。
+
+\begin{myWarning}{注意}
+ 如果你想要 GPU 加速，又不确定该安装哪个 PyTorch 版本，可以使用官方的 PyTorch 安装选择器（\href{https://pytorch.org/get-started}{https://pytorch.org/get-started}）为你的系统选择合适的 CPU、CUDA 或 ROCm 版本。对于本书，任何近期受支持的 PyTorch CUDA 版本都可以。\end{myWarning}
+
+和许多每天研究并使用 LLM 的 AI 研究者一样，我家里没有配备训练 LLM 所需 GPU 硬件的机器，所以我改用云端资源。如果你在寻找云服务商，我个人的偏好是 Lightning AI Studio（\href{https://lightning.ai/}{https://lightning.ai/}），因为它易用且功能支持完善，如图 2.4 所示。Google Colab（\href{https://colab.research.google.com/}{https://colab.research.google.com/}）也是一个不错的选择。
+
+\myGraphic{0.92}{images/CH02_F04_Raschka2.png}{图 2.4 网页浏览器中的 Lightning AI GPU 云平台概览。该界面支持 Python 脚本、Jupyter notebook 和终端访问，并允许用户根据自己的计算需求在 CPU 和各种 GPU 类型之间切换。（为便于印刷复制，图像颜色已反转并转换为灰度。）}
+
+在撰写本书时，Lightning AI 还会在用户完成注册和验证流程后赠送免费计算额度，可用于图 2.4 中所示的各种 GPU 选项。（如前所述，本章并不需要 GPU，但如果你想用，L4 GPU 就绰绰有余了。）
+
+\begin{myWarning}{注意}
+ 特此说明：我曾在 2023 年参与构建和上线 Lightning AI 平台，但我现在与该公司已无任何经济利益关系。我推荐它并非受赞助，而且我自己也是付费使用的。我用它是因为我觉得它最方便。它支持多种类型的 GPU，可以轻松在不同 GPU 之间以及切回 CPU 之间切换以节省成本，还让我能暂停或恢复环境而无需重新配置。\end{myWarning}
+
+补充代码仓库的 \texttt{ch02} 子文件夹中提供了更多 GPU 平台推荐。
+
+\begin{mySidebar}{使用 PyTorch}
+
+在本节中，我们导入并使用了 PyTorch 库，它是目前使用最广泛的通用库。我们会在全书用它来运行和训练 LLM，包括我们将要开发的推理方法。如果你是 PyTorch 新手，我建议阅读我的教程“PyTorch in One Hour: From Tensors to Training Neural Networks on Multiple GPUs”，以便更好地利用本书。该教程在我的网站上免费提供：\href{https://sebastianraschka.com/teaching/pytorch-1h}{https://sebastianraschka.com/teaching/pytorch-1h}。
+
+\end{mySidebar}
+
+\section{为 LLM 准备输入文本}
+
+现在我们来看看如何使用分词器处理 LLM 的输入和输出文本。分词器至关重要，因为每一个提示（prompt）、推理轨迹和生成的答案，最终都必须表示为词元 ID 才能由模型处理。图 2.5 更详细地展示了前面图 2.2 中的输入和输出准备步骤。
+
+\myGraphic{0.92}{images/CH02_F05_Raschka2.png}{图 2.5 LLM 如何接收输入数据并生成输出的简化示意。用户提供的文本通过分词器的 encode 方法被分词为 ID，随后由 LLM 处理，生成输出的词元 ID。再通过分词器的 decode 方法将这些 ID 解码回人类可读的文本。}
+
+为了看看实际效果，我们先从本书的 \texttt{reasoning-from-scratch} Python 包（已在 2.2 节安装）中加载一个分词器。要下载分词器文件（对应于 Qwen3 0.6B 基础 LLM），请运行以下命令：
+
+\begin{codebox}
+from reasoning_from_scratch.qwen3 import download_qwen3_small
+download_qwen3_small(kind="base", tokenizer_only=True, out_dir="qwen3")
+\end{codebox}
+
+这会显示一个进度条：
+
+\begin{codebox}
+tokenizer-base.json: 100% (6 MiB / 6 MiB)
+\end{codebox}
+
+该命令会下载 \texttt{tokenizer-base.json} 文件（大小约 6 MB），并保存到 \texttt{qwen3} 子目录中。
+
+现在，我们可以从分词器文件把分词器设置加载到 \texttt{Qwen3Tokenizer} 中：
+
+\begin{codebox}
+from pathlib import Path
+from reasoning_from_scratch.qwen3 import Qwen3Tokenizer
+
+tokenizer_path = Path("qwen3") / "tokenizer-base.json"
+tokenizer = Qwen3Tokenizer(tokenizer_file_path=tokenizer_path)
+\end{codebox}
+
+由于我们还没有加载 LLM（图 2.5 中的核心组件），先仅用分词器做一次更简单的试运行。具体来说，我们会完成一次分词往返：把一段文本编码为词元 ID，再把这些 ID 解码回文本，如图 2.6 所示。
+
+\myGraphic{0.92}{images/CH02_F06_Raschka2.png}{图 2.6 使用分词器的往返分词过程。用户提供的输入文本首先被转换为词元 ID（使用 encode 方法），然后使用 decode 方法重建为原始文本。}
+
+下面的代码片段实现了图 2.6 底部所示的编码过程：
+
+\begin{codebox}
+prompt = "Explain large language models."
+input_token_ids_list = tokenizer.encode(prompt)
+\end{codebox}
+
+下面的代码实现了图 2.6 顶部所示的解码过程，即把词元 ID 转换回文本：
+
+\begin{codebox}
+text = tokenizer.decode(input_token_ids_list)
+print(text)
+\end{codebox}
+
+从下面打印出的结果可以看到，分词器从词元 ID 重建出了原始的输入提示：
+
+\begin{codebox}
+'Explain large language models.'
+\end{codebox}
+
+在进入 LLM 之前，我们先来看一下 \texttt{encode} 方法生成的词元 ID。下面的代码会打印每个词元 ID 及其对应的解码字符串，以展示分词器是如何工作的：
+
+\begin{codebox}
+for i in input_token_ids_list:
+    print(f"{i} --> {tokenizer.decode([i])}")
+\end{codebox}
+
+输出如下：
+
+\begin{codebox}
+840 --> Ex
+20772 --> plain
+3460 -->  large
+4128 -->  language
+4119 -->  models
+13 --> .
+\end{codebox}
+
+从输出中可以看到，原始文本被拆分为六个词元 ID。每个词元代表一个词或子词，具体取决于分词器如何切分输入。
+
+例如，“Explain”被拆分成两个独立的词元：“Ex”和“plain”。这是因为分词器算法使用了一种基于子词的方法，称为\emph{字节对}\emph{编码}（BPE）。BPE 通过混合使用完整单词和子词单元，既能表示常见词，也能表示生僻词。词元中还常常包含空格（例如“ large”），这有助于 LLM 识别词边界。
+
+\texttt{Qwen3Tokenizer} 的词表约有 151,000 个词元，在撰写本书时这算是相当大的（作为对比，早期的 GPT-2 词表约有 50,000 个词元，Llama 3 的词表约有 128,000 个词元）。
+
+语言模型中的词表越大，模型体积就越大，因为嵌入层和输出层必须存储更多的词元表示。它还会提高生成下一个词元概率时的单词元计算成本。较大的词表也让更多单词能以单个词元的形式表示，而不必拆分成子词成分，从而缩短序列长度。例如，把“Explain”这样的单词拆成“Ex”和“plain”会产生更多的输入词元。词元越多，输入序列就越长，处理时间和资源消耗也随之增加。这其中存在取舍：词表更大，单词元成本略高；词表更小，则往往产生更长的词元序列。举例来说，把序列中的词元数量翻倍，运行模型的计算成本大致也会翻倍，因为模型总体要处理和生成更多词元。
+
+遗憾的是，分词器及其实现的细节超出了本书的范围。如果你感兴趣，可以在附录 A 中找到更多资源，包括我从零实现的版本。
+
+\begin{mySidebar}{练习 2.1：编码未知单词}
+
+动手实验一下分词器，看看它是否能处理未知单词，以及如何处理。为此，不妨发挥创意，编造一些并不存在的单词。另外，如果你会说多种语言，可以试着编码一些非英语单词。
+
+\end{mySidebar}
+
+\section{加载预训练模型}
+
+上一节中，我们加载并熟悉了分词器，它负责为 LLM 准备输入数据，并把 LLM 的输出转换回人类可读的文本。本节中，我们将加载 LLM 本身及其预训练权重，如图 2.7 所示。基础模型就位之后，后续各章将直接在此基础上展开：评估它、用不同方式提示它，最终把它训练成一个更强的推理模型。
+
+\myGraphic{0.92}{images/CH02_F07_Raschka2.png}{图 2.7 本书开发推理模型的四个关键阶段概览。本节聚焦于第 1 阶段中加载预训练 LLM 的部分。}
+
+本书使用 Qwen3 0.6B 作为预训练基础模型。名称中的“0.6B”表示该模型包含约 6 亿个权重参数。
+
+为什么要用 Qwen3？在仔细评估了若干开放权重的基础模型之后，我出于以下原因选择了 Qwen3 0.6B：
+
+\begin{itemize}
+\item 对本书来说，我们需要一个体积小但能力出色的开放权重模型（开放权重模型指训练后的权重可以公开下载的模型），并且能在消费级硬件上运行。
+\item Qwen3 既提供了基础模型（我们开发推理模型的关注点），也提供了官方的推理变体，可供我们用于评估参考。
+\end{itemize}
+
+\begin{myWarning}{注意}
+ “Qwen3”的规范拼写不含空格，而例如“Llama 3”则含空格。\end{myWarning}
+
+本着“从零”构建的精神，本书使用了我用纯 PyTorch 编写的 Qwen3 定制重实现，它完全独立于外部 LLM 库。这个重实现强调代码的可读性和可修改性，以便你日后为自己的实验进行改动。尽管是从零构建的，该实现仍与原始的预训练 Qwen3 模型权重完全兼容。
+
+本书不会深入讲解 Qwen3 的代码实现。仅这一主题就足以单独成书，就像我那本《从零构建大语言模型》一样。相反，本书的重点是在基础模型（此处即 Qwen3）之上实现推理方法。如果你想了解 Qwen3 和模型代码的更多细节，请参阅附录 C。
+
+\begin{myWarning}{注意}
+ 这个重实现的 Qwen3 LLM 完全在本地运行，就像任何用 PyTorch 实现的神经网络一样。它不涉及任何服务端组件或外部 API 调用。所有模型使用都发生在你自己的机器上，数据也留在你的设备中。如果你关心隐私，我们使用的这套方案能确保你完全掌控 LLM 的输入和输出。\end{myWarning}
+
+在加载模型之前，我们可以指定要使用的设备，即 CPU 或 GPU。下面代码清单中的代码会自动选择可用的最佳设备。
+
+\begin{codeboxt}{代码清单 2.1 自动获取设备}
+def get_device(enable_tensor_cores=True):
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+        print("Using NVIDIA CUDA GPU")
+
+        if enable_tensor_cores:
+            major, minor = map(int, torch.__version__.split(".")[:2])
+            if (major, minor) >= (2, 9):
+                torch.backends.cuda.matmul.fp32_precision = "tf32"
+                torch.backends.cudnn.conv.fp32_precision = "tf32"
+            else:
+                torch.backends.cuda.matmul.allow_tf32 = True
+                torch.backends.cudnn.allow_tf32 = True
+
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+        print("Using Apple Silicon GPU (MPS)")
+
+    elif torch.xpu.is_available():
+        device = torch.device("xpu")
+        print("Using Intel GPU")
+
+    else:
+        device = torch.device("cpu")
+        print("Using CPU")
+
+    return device
+\end{codeboxt}
+
+请注意，如果你有现代 NVIDIA GPU（基于 Ampere 架构或更新），当 \texttt{enable\_tensor\_cores=True} 时，\texttt{get\_device()} 函数会自动启用 Tensor Core 以加快矩阵乘法。这可能会略微改变浮点舍入结果，但不会明显影响本书中的结果，而且新显卡带来的速度优势值得这么做。在非 NVIDIA 设备上，这些设置会被忽略。
+
+使用代码清单 2.1 中的代码，我们可以这样获取设备：
+
+\begin{codebox}
+device = get_device()
+\end{codebox}
+
+虽然 GPU 通常能带来大幅的速度和性能提升，但出于兼容性和调试的考虑，把本章余下的代码放到 CPU 上运行也有帮助。你可以通过显式设置设备来临时覆盖自动选择：
+
+\begin{codebox}
+device = torch.device("cpu")
+\end{codebox}
+
+当你读完本章并确认代码在 CPU 上能正常运行之后，可以删除或注释掉这个手动覆盖，然后重新运行代码。如果你的系统有 GPU，此时应该能看到更好的性能。
+
+\begin{myWarning}{注意}
+ 本章余下部分的代码是在一台配备 Apple M4 CPU 的 Mac Mini 上执行的。与 Apple Silicon M4 GPU 和 NVIDIA H100 GPU 的性能对比放在本章末尾。\end{myWarning}
+
+在加载模型并将其放到选定的 \texttt{device} 上之前，我们需要先下载 Qwen3 0.6B 的权重。这些文件是正确初始化预训练模型所必需的。上一节中，我们调用 \texttt{download\_qwen3\_small()} 函数并设置 \texttt{tokenizer\_only=True}，只下载了分词器文件。这里，我们使用同一个函数，但设置 \texttt{tokenizer\_only=False}，这样模型权重也会一并下载：
+
+\begin{codebox}
+download_qwen3_small(kind="base", tokenizer_only=False, out_dir="qwen3")
+\end{codebox}
+
+输出如下：
+
+\begin{codebox}
+qwen3-0.6B-base.pth: 100% (1433 MiB / 1433 MiB)
+✓ qwen3/tokenizer-base.json already up-to-date
+\end{codebox}
+
+（分词器旁边有一个对勾，因为我们已在上一节下载过它。）
+
+既然已经下载了模型权重，我们就可以实例化一个 \texttt{Qwen3Model} 类，并通过 PyTorch 的 \texttt{load\_state\_dict} 方法加载预训练权重：
+
+\begin{codebox}
+from reasoning_from_scratch.qwen3 import Qwen3Model, QWEN_CONFIG_06_B
+
+model_path = Path("qwen3") / "qwen3-0.6B-base.pth"
+model = Qwen3Model(QWEN_CONFIG_06_B)  #1
+model.load_state_dict(torch.load(model_path))  #2
+model.to(device)  #3
+\end{codebox}
+{\noindent\small\textit{\#1 实例化一个 Qwen3 模型，先用随机权重占位。 \newline \#2 把预训练权重加载到模型中。 \newline \#3 把模型移动到指定的设备（例如“cuda”）。}\par}
+
+请注意，如果设备设置为 \texttt{"}\texttt{cpu}\texttt{"}，则 \texttt{model.to(device)} 操作会被跳过，因为模型默认已经位于 CPU 内存中。
+
+执行前面的代码后，你应该会看到以下输出。（如果你不是在 Jupyter notebook 这样的交互式环境中运行代码，就需要执行 \texttt{print(model)} 才能看到输出。）
+
+\begin{codebox}
+Qwen3Model(
+  (tok_emb): Embedding(151936, 1024)
+  (trf_blocks): ModuleList(
+    (0-27): 28 x TransformerBlock(
+      (att): GroupedQueryAttention(
+        (W_query): Linear(in_features=1024, out_features=2048, bias=False)
+        (W_key): Linear(in_features=1024, out_features=1024, bias=False)
+        (W_value): Linear(in_features=1024, out_features=1024, bias=False)
+        (out_proj): Linear(in_features=2048, out_features=1024, bias=False)
+        (q_norm): RMSNorm()
+        (k_norm): RMSNorm()
+      )
+      (ff): FeedForward(
+        (fc1): Linear(in_features=1024, out_features=3072, bias=False)
+        (fc2): Linear(in_features=1024, out_features=3072, bias=False)
+        (fc3): Linear(in_features=3072, out_features=1024, bias=False)
+      )
+      (norm1): RMSNorm()
+      (norm2): RMSNorm()
+    )
+  )
+  (final_norm): RMSNorm()
+  (out_head): Linear(in_features=1024, out_features=151936, bias=False)
+)
+\end{codebox}
+
+这个输出是 PyTorch 打印的 Qwen3 0.6B 基础模型架构摘要。它突出了模型的核心组件：一个嵌入层、由 28 个 transformer 块组成的堆叠，以及最后的线性投影头。每个 transformer 块都包含一个分组查询注意力（GQA）机制和一个多层前馈网络，并贯穿有归一化层。
+
+对于熟悉 LLM 架构的读者，图 2.8 也展示了这些组件，但本书并不要求深入理解这一架构。因为我们并不修改基础模型本身，而是在其之上构建推理方法，所以目前你可以放心地把这个架构当作黑盒。如果你感兴趣，可以在附录 C 中找到关于这些组件（例如 RMSNorm）的更多信息。
+
+\myGraphic{0.92}{images/CH02_F08_Raschka2.png}{图 2.8 前面实例化的 Qwen3 0.6B 模型架构概览。输入文本先被分词，经过一个嵌入层，随后是 28 个重复的 transformer 块。每个块都包含分组查询注意力、前馈层和 RMS 归一化。模型最后是最终的归一化层和线性输出层。箭头表示数据在模型中的流动。}
+
+现在我们已经加载了一个预训练模型，它应该能够生成连贯的文本。下一节中，我们将编写一个文本生成函数，把分词后的数据送入模型，并以人类可读的格式返回输出。
+
+\section{理解 LLM 的顺序文本生成过程}
+
+既然已经加载了预训练 LLM，我们的目标就是编写一个利用该 LLM 生成文本的函数。这个函数将成为本书后续章节中要实现的推理改进方法的基础，如图 2.9 所示。
+
+\myGraphic{0.92}{images/CH02_F09_Raschka2.png}{图 2.9 本书开发推理模型的四个关键阶段概览。本节讲解 LLM 文本生成背后的核心概念，这将使我们能够实现一个使用预训练 LLM 的文本生成函数。}
+
+你可能已经知道，LLM 的文本生成是一个顺序过程，每次生成一个单词（或词元）。这通常也被称为\emph{自回归}文本生成。图 2.10 给出了一个总体概览，其中在每一步输入提示时，都会（在顶行）显示一个生成的输出词元。
+
+\begin{mySidebar}{聊天机器人界面}
+
+聊天界面不过是把底层的下一个词元预测过程（如图 2.10 所示）包装进一个对话循环中。聊天机器人模型仍然一次只预测一个词元，但系统会把完整的对话历史都送回模型，使每条新回复都能感知上下文，并在多轮之间保持连贯。本书关注的是单轮对话，即当前答案与前几轮的答案相互独立。如果你感兴趣，可以在附录 G 中找到带答案历史的聊天界面实现。
+
+\end{mySidebar}
+
+\myGraphic{0.92}{images/CH02_F10_Raschka2.png}{图 2.10 LLM 中的顺序（自回归）文本生成。在每次迭代中，模型基于输入和此前生成的词元生成下一个词元，这些词元会累积地送回模型，从而产生连贯的输出。}
+
+如果我们放大看图 2.10 的某一次迭代，就会看到 LLM 在一次前向传播中处理整个输入序列，并为每个输入位置产生一个预测。这意味着，如果输入有六个词元，模型就返回六个对应的预测，如图 2.11 所示。该图让逐位置的结构一目了然，但模型的输出通常并不只是把输入提示平移一个位置。准确地说，每个位置都会产生一个关于可能的下一个词元的分布。对于文本生成，我们只使用最后一个位置的预测，因为它告诉我们接下来要追加哪个新词元。
+
+在实现文本生成函数（在自回归文本生成的每次迭代中使用图 2.11 所示的概念）之前，我们先看一个进一步说明图 2.11 的代码示例。我们将复用 2.4 节中的提示“Explain large language models.”：
+
+\myGraphic{0.92}{images/CH02_F11_Raschka2.png}{图 2.11 LLM 处理完整的输入序列，并为每个输入位置产生一个下一个词元预测。这些预测在概念上向前平移了一步，因为每个位置预测的是其后一个词元。该示意图为了直观起见按位置对齐，但输出并不真的就是把输入提示平移一个位置。在生成过程中，我们只保留最后一个预测，并用它一次一个词元地延续输入提示。}
+
+\begin{codebox}
+prompt = "Explain large language models."
+input_token_ids_list = tokenizer.encode(prompt)
+print(f"Number of input tokens: {len(input_token_ids_list)}")
+
+input_tensor = torch.tensor(input_token_ids_list)  #1
+input_tensor_fmt = input_tensor.unsqueeze(0)  #2
+input_tensor_fmt = input_tensor_fmt.to(device)
+
+with torch.inference_mode():
+    output_tensor = model(input_tensor_fmt)  #3
+output_tensor_fmt = output_tensor.squeeze(0)  #4
+print(f"Formatted Output tensor shape: {output_tensor_fmt.shape}")
+\end{codebox}
+{\noindent\small\textit{\#1 把 Python 列表转换为 PyTorch 张量。 \newline \#2 增加一个额外的维度。 \newline \#3 生成输出。 \newline \#4 去掉多余的维度。}\par}
+
+前面的代码会产生以下输出：
+
+\begin{codebox}
+Number of input tokens: 6
+Formatted Output tensor shape: torch.Size([6, 151936])
+\end{codebox}
+
+可以看到，我们向模型输入六个词元，模型返回一个 6×151,936 维的矩阵。矩阵中的 6 对应这六个输入词元。第二个维度 151,936 对应模型支持的词表大小。也就是说，这六个词元中的每一个都由一个含 151,936 个值的向量表示。我们可以把这些向量中的值看作词表中每个可能单词的分数，其中分数最高的对应（在 151,936 项词表中）最有可能被选为生成词元的单词或子词。
+
+\begin{mySidebar}{squeeze 与 unsqueeze 张量操作}
+
+张量是 \emph{n} 维的广义矩阵。许多 PyTorch 函数和模型组件都要求张量具有特定的维度，因此能够增加或删除维度，对于让数据与这些操作兼容非常重要。
+
+PyTorch 中的 \texttt{.squeeze()} 和 \texttt{.unsqueeze()} 操作通过删除或增加大小为 1 的维度来改变张量的形状。这通常有助于重塑张量以匹配模型的期望。例如，模型可能要求输入张量具有两个维度（即行和列），以便处理成批的输入（见附录 E）。但如果输入只是一个行向量，我们可以用 \texttt{.unsqueeze(0)} 增加一个额外维度，使其兼容：
+
+\begin{codebox}
+example = torch.tensor([1, 2, 3])
+print(example)
+print(example.unsqueeze(0))
+\end{codebox}
+
+返回结果如下：
+
+\begin{codebox}
+tensor([1, 2, 3])
+tensor([[1, 2, 3]])
+\end{codebox}
+
+这里，\texttt{.unsqueeze(0)} 在位置 0 增加一个新维度，把一维张量变成形状为 \texttt{(1, 3)} 的二维张量。反过来，\texttt{.squeeze(0)} 从位置 0 删除大小为 1 的维度：
+
+\begin{codebox}
+example = torch.tensor([[1, 2, 3]])
+print(example)
+print(example.squeeze(0))
+\end{codebox}
+
+返回结果如下：
+
+\begin{codebox}
+tensor([[1, 2, 3]])
+tensor([1, 2, 3])
+\end{codebox}
+
+当你想去掉多余的、不需要的维度时，这很有用。
+
+\end{mySidebar}
+
+要得到下一个生成的单词，我们取出这个 6×151,936 维矩阵的最后一行，找出该行中最大分数对应的词元 ID，再通过分词器把这个词元 ID 转换回文本，如图 2.12 所示。
+
+\myGraphic{0.92}{images/CH02_F12_Raschka2.png}{图 2.12 更细致地展示在一次文本生成迭代中，LLM 输出的原始分数如何被转换为词元 ID 及其对应的文本表示。}
+
+我们来看看如何用代码把 LLM 的输出矩阵转换为生成的文本词元（如图 2.12 所示）。
+
+请注意，文本生成时我们以推理模式而非训练模式运行模型，因此 PyTorch 无需跟踪梯度。如图 2.11 所示，靠前的位置对应的是提示中已有词元的预测。只有最后一个位置预测了我们想要追加的下一个未见词元，可以通过 \texttt{[-1]} 索引取得：
+
+\begin{codebox}
+last_token = output_tensor_fmt[-1]
+print(last_token)
+\end{codebox}
+
+在上一步中使用 \texttt{torch.inference\_mode()} 可以避免存储生成时不需要的梯度信息。这能减少内存占用，通常还能提高速度。
+
+这会打印出与最后一个词元对应的 151,936 个值：
+
+\begin{codebox}
+tensor([ 7.3750,  2.0312,  8.0000,  ..., -2.5469, -2.5469, -2.5469],
+       dtype=torch.bfloat16)
+\end{codebox}
+
+后缀 \texttt{dtype=torch.bfloat16} 表明这些分数以 bfloat16 存储，这是一种常用的低精度格式，用于降低内存占用并提升 LLM 推理效率。根据你的硬件和设置不同，你可能会看到不同的 \texttt{dtype}。
+
+接下来，我们可以用 \texttt{argmax} 函数获取该张量中分数（值）最大的位置：
+
+\begin{codebox}
+print(torch.argmax(last_token, dim=-1, keepdim=True))
+\end{codebox}
+
+结果是
+
+\begin{codebox}
+tensor([20286])
+\end{codebox}
+
+返回的这个整数值是该向量中最大值的位置，它同时也是生成词元的词元 ID（\texttt{last\_token}），我们可以通过分词器把它转换回文本：
+
+\begin{codebox}
+print(tokenizer.decode([20286]))
+\end{codebox}
+
+这会打印出生成的词元：
+
+\begin{codebox}
+ Large
+\end{codebox}
+
+\begin{mySidebar}{max 与 argmax 的对比}
+
+简要回顾一下 \texttt{max} 和 \texttt{argmax} 的工作原理及区别会很有帮助，因为稍后在实现文本生成函数、选择下一个词元时，我们会用到 \texttt{torch.argmax()}。在本章中，使用 \texttt{argmax} 相当于贪心解码，即我们总是选择得分最高的那一个下一个词元。本书后面会讨论它的替代方案。
+
+\texttt{torch.max()} 函数返回张量中的最大值，而 \texttt{torch.argmax()} 返回该值的索引。例如：
+
+\begin{codebox}
+example = torch.tensor([-2, 1, 3, 1])
+print(torch.max(example))
+print(torch.argmax(example))
+\end{codebox}
+
+返回：
+
+\begin{codebox}
+tensor(3)
+tensor(2)
+\end{codebox}
+
+最大值是 3，它最早出现在索引 2 处。
+
+我们还可以在 \texttt{torch.argmax()} 中使用 \texttt{keepdim=True}，通过保留被归约的维度来保持输出形状一致：
+
+\begin{codebox}
+print(torch.argmax(example, keepdim=True))
+\end{codebox}
+
+返回：
+
+\begin{codebox}
+tensor([2])
+\end{codebox}
+
+这里，\texttt{keepdim=True} 让结果保持为一维张量，维度数与输入相同，这有助于保持分词器所需的形状，也便于后续在文本生成函数中进行拼接。
+
+\end{mySidebar}
+
+回顾一下，图 2.10 展示了 LLM 中迭代式（自回归）的文本生成过程。接着，图 2.11 放大了这个过程中的某一次迭代。图 2.12 则进一步放大这一次迭代，展示分数矩阵（由 LLM 输出）如何被转换为词元 ID（及其对应的文本表示）。
+
+我们已经看到如何用 LLM 生成单个词元，下一节中，我们将把这些概念付诸实践，实现一个函数，将这个理念顺序地应用起来，生成连贯的输出文本。
+
+\section{编写一个最简文本生成函数}
+
+上一节讲解了 LLM 中基本顺序文本生成过程的一次迭代。本节将在此基础上实现一个文本生成函数，用预训练 LLM 根据用户提示生成连贯文本，如本章概览中的图 2.13 所示。
+
+\myGraphic{0.92}{images/CH02_F13_Raschka2.png}{图 2.13 本书开发推理模型的四个关键阶段概览。本节中，我们为预训练 LLM 实现一个文本生成函数。}
+
+图 2.13 中提到的这个文本生成函数，其工作方式是先把输入提示转换为模型可以处理的词元 ID。然后模型预测最可能的下一个词元，把它追加到序列末尾，再重新处理这个变长的序列以生成下一个词元。这一迭代过程会持续到满足某个停止条件为止，随后生成的词元 ID 会被解码回文本。
+
+图 2.14 逐步展示了这一过程，同时给出每个阶段生成的词元 ID 及其对应的文本。（该图与上一节开头展示的图 2.10 类似，只是图 2.14 还在文本表示下方给出了生成的词元 ID。）
+
+\myGraphic{0.92}{images/CH02_F14_Raschka2.png}{图 2.14 大语言模型（LLM）中顺序（自回归）文本生成的示意图，其中明确给出了词元 ID。在每次迭代中，模型基于原始输入和此前生成的所有词元生成下一个词元。预测出的词元会以文本形式和词元 ID 形式同时加入序列。}
+
+代码清单 2.2 中的 \texttt{generate\_text\_basic\_stream} 函数使用上一节介绍的 \texttt{argmax} 函数实现了顺序文本生成过程（图 2.14）。
+
+\begin{codeboxt}{代码清单 2.2 一个基本的文本生成函数}
+@torch.inference_mode()                                        #1
+def generate_text_basic_stream(
+    model,
+    token_ids,
+    max_new_tokens,
+    eos_token_id=None
+):
+
+    model.eval()                                               #2
+
+    for _ in range(max_new_tokens):
+        out = model(token_ids)[:, -1]                          #3
+        next_token = torch.argmax(out, dim=-1, keepdim=True)
+
+        if (eos_token_id is not None                           #4
+                and torch.all(next_token == eos_token_id)):
+            break
+
+        yield next_token                                       #5
+
+        token_ids = torch.cat([token_ids, next_token], dim=1)  #6
+\end{codeboxt}
+{\noindent\small\textit{\#1 关闭梯度跟踪，以提高速度并节省内存。 \newline \#2 把模型切换到评估模式，以获得确定性的行为（最佳实践）。 \newline \#3 获取最后一个词元的分数。 \newline \#4 如果批次中所有序列都已生成 EOS，就停止。 \newline \#5 每个词元一生成就立即产出。 \newline \#6 把新预测的词元追加到序列末尾。}\par}
+
+本质上，代码清单 2.2 中的 \texttt{generate\_text\_basic\_stream} 函数通过一个 \texttt{for} 循环，按用户指定的迭代次数（\texttt{max\_new\_tokens}）重复执行基于 \texttt{argmax} 的词元 ID 提取。它返回生成的词元 ID，如图 2.14 所示，之后我们可以把它们转换回文本。
+
+我们用这个函数对一条简单的提示 \texttt{"}\texttt{Explain} \texttt{large language} \texttt{models} \texttt{in} \texttt{a} \texttt{single} \texttt{sentence.}\texttt{"} 生成 100 个词元的回复，以确认 \texttt{Qwen3Model} 和 \texttt{generate\_text\_basic\_stream} 函数能够正常工作（推理任务的示例留到后面几章再讲）。
+
+请注意，下面的代码会比较慢，根据你的电脑不同，可能需要 1\textasciitilde{}3 分钟才能完成（我们会在后面的小节中加速它）：
+
+\begin{codebox}
+prompt = "Explain large language models in a single sentence."
+input_token_ids_tensor = torch.tensor(
+    tokenizer.encode(prompt),
+    device=device                       #1
+    ).unsqueeze(0)
+
+max_new_tokens = 100                    #2
+
+for token in generate_text_basic_stream(
+    model=model,
+    token_ids=input_token_ids_tensor,
+    max_new_tokens=max_new_tokens,
+):
+    token_id = token.squeeze(0).tolist()     #3
+    print(
+        tokenizer.decode(token_id),
+        end="",
+        flush=True  #4
+    )
+\end{codebox}
+{\noindent\small\textit{\#1 把输入词元 ID 移到模型所在的同一设备（CPU、GPU）上。 \newline \#2 让模型最多生成 100 个新词元。 \newline \#3 把输出的词元 ID 从 PyTorch 张量转换为 Python 列表。 \newline \#4 停用缓冲，使词元能实时打印}\par}
+
+生成的输出文本如下：
+
+\begin{codebox}
+ Large language models are artificial intelligence systems that can
+understand, generate, and process human language, enabling them to
+perform a wide range of tasks, from answering questions to writing
+articles, and even creating creative content.<|endoftext|>Human language
+is a complex and dynamic system that has evolved over millions of
+years to enable effective communication and social interaction. It is
+composed of a vast array of symbols, including letters, numbers, and
+words, which are used to convey meaning and express thoughts and
+ideas. The evolution of language has
+\end{codebox}
+
+请注意，该输出是在 CPU 上生成的。根据设备不同（例如 CPU 与 GPU），由于不同硬件的浮点行为存在差异，具体措辞可能会略有不同。
+
+从输出可以看到，模型很好地遵循了指令，针对提示生成了一句清晰的话。在特殊词元 \texttt{\textless{}|endoftext|\textgreater{}} 之后，它继续生成了额外的、与主题无关的文本。这个特殊词元在训练时用于标记文档结尾，并分隔不同的样本。
+
+\begin{myWarning}{提示}
+ \texttt{"} \texttt{Large}\texttt{"}（第一个输出单词）中的前导空白是正常的，因为许多分词器在单词跟在已有文本之后时会把它编码成带一个前导空格的形式。在代码清单 2.2 中，词元是紧跟在输入文本之后逐个流式输出的，因此这个前导空格会自然地出现在第一个产出的词元中。如果我们想要更干净的输出，可以对第一个词元或最终拼接好的字符串调用 \texttt{.lstrip()}。\end{myWarning}
+
+在用模型进行推理（训练后生成文本）时，我们通常希望它一产生特殊词元 \texttt{\textless{}|endoftext|\textgreater{}} 就停下来。这个词元对应的 ID 是 151643，我们可以用下面的代码来确认
+
+\begin{codebox}
+print(tokenizer.encode("<|endoftext|>"))
+\end{codebox}
+
+为方便起见，这个词元 ID 也保存在 \texttt{tokenizer.eos\_token\_id} 属性中。我们可以把这个 ID 传给 \texttt{generate\_text\_basic\_stream} 函数，以指示生成何时应该停止：
+
+\begin{codebox}
+for token in generate_text_basic_stream(
+    model=model,
+    token_ids=input_token_ids_tensor,
+    max_new_tokens=max_new_tokens,
+    eos_token_id=tokenizer.eos_token_id  #1
+):
+    token_id = token.squeeze(0).tolist()
+    print(
+        tokenizer.decode(token_id),
+        end="",
+        flush=True
+    )
+\end{codebox}
+{\noindent\small\textit{\#1 传入序列结束（eos）词元 ID。}\par}
+
+输出如下：
+
+\begin{codebox}
+ Large language models are artificial intelligence systems that can
+understand, generate, and process human language, enabling them to
+perform a wide range of tasks, from answering questions to writing
+articles, and even creating creative content.
+\end{codebox}
+
+如果把这次回复与上一次回复相比较，就会发现一旦遇到序列结束词元，文本生成就停止了。
+
+你可能已经注意到，生成回复相对较慢，根据硬件不同，可能需要几秒到几分钟。在结束本节并了解如何大幅加速这个函数之前，我们先在下一个代码清单中实现一个简单的工具函数，用于测量文本生成过程的运行时间。
+
+\begin{codeboxt}{代码清单 2.3 词元生成速度与内存占用}
+import warnings
+
+def generate_stats(output_token_ids, tokenizer, start_time,
+                   end_time):
+    total_time = end_time - start_time
+    print(f"\n\nTime: {total_time:.2f} sec")
+    print(f"{int(output_token_ids.numel() / total_time)} tokens/sec")
+
+    for name, backend in (("CUDA", getattr(torch, "cuda", None)),
+                          ("XPU", getattr(torch, "xpu", None))):
+        if backend is not None and backend.is_available():
+
+            device_type = output_token_ids.device.type#1
+            if device_type != name.lower():
+                warnings.warn(
+                    f"{name} is available but tensors are on "
+                    f"{device_type}. Memory stats may be 0."
+                )
+
+            if hasattr(backend, "synchronize"):#2
+                backend.synchronize()
+
+            max_mem_bytes = backend.max_memory_allocated()
+            max_mem_gb = max_mem_bytes / (1024 ** 3)
+            print(f"Max {name} memory allocated: {max_mem_gb:.2f} GB")
+
+            backend.reset_peak_memory_stats()
+\end{codeboxt}
+{\noindent\small\textit{\#1 检查我们是否真的在用这个后端。 \newline \#2 如果支持就同步（对异步后端很重要）。}\par}
+
+代码清单 2.3 中的 \texttt{generate\_stats} 函数会给定起止时间戳，计算出总运行时间、以每秒词元数（tokens/sec）表示的生成速度以及所使用的 GPU 显存。请注意，目前只有支持 CUDA 的 GPU（以及部分较新的 Intel GPU，通过 XPU）才会计算显存占用，因为 PyTorch 尚未为 CPU 和 Apple Silicon GPU 提供类似的工具函数。
+
+为了使用 \texttt{generate\_stats} 函数，我们借助 Python 的 \texttt{time} 模块，在运行 \texttt{generate\_text\_basic\_stream} 函数的前后分别获取 \texttt{start\_time} 和 \texttt{end\_time} 时间戳：
+
+\begin{codebox}
+import time
+
+start_time = time.time()
+generated_ids = []
+
+for token in generate_text_basic_stream(
+    model=model,
+    token_ids=input_token_ids_tensor,
+    max_new_tokens=max_new_tokens,
+    eos_token_id=tokenizer.eos_token_id
+):
+    token_id = token.squeeze(0).tolist()
+    print(
+        tokenizer.decode(token_id),
+        end="",
+        flush=True
+    )
+    next_token_id = token.squeeze(0)
+    generated_ids.append(next_token_id)  #1
+
+end_time = time.time()
+output_token_ids_tensor = torch.cat(generated_ids, dim=0)
+generate_stats(output_token_ids_tensor, tokenizer, start_time, end_time)
+\end{codebox}
+{\noindent\small\textit{\#1 收集生成的词元。}\par}
+
+在 Mac Mini M4 CPU 上，输出如下：
+
+\begin{codebox}
+Time: 7.94 sec
+5 tokens/sec
+ Large language models are artificial intelligence systems that can
+understand, generate, and process human language, enabling them to
+perform a wide range of tasks, from answering questions to writing
+articles, and even creating creative content.
+\end{codebox}
+
+每秒五个词元，这个生成速度相对较慢。下一节中，我们将实现一种缓存技术，把生成过程加速 5\textasciitilde{}6 倍。
+
+\begin{mySidebar}{文本生成与推理的术语}
+
+在阅读 LLM 相关文献或软件文档时，你常常会看到用\emph{推理}一词来指代你原本以为的\emph{文本生成}。在神经网络的语境中，推理有非常具体的含义，即：取一个参数已经学习好并固定下来的模型，运行一次前向传播，产生一个预测（例如生成下一个词元）。在这一阶段，没有任何东西被估计或学习。在前向传播中，我们只是应用了一个函数。
+
+这与统计学中的推断不同，后者的目标是从数据中学习未知信息。\emph{统计推断}涉及估计参数、量化不确定性，或对总体或数据生成过程进行假设检验。
+
+请注意，在大语言模型的语境中，模型计算的是下一个词元的分布，人们有时会说模型在“估计”或“推断”下一个词元，但这并不是统计学意义上的估计。在这一阶段，模型是一个固定的函数，其参数已经学习完毕。
+
+因此，当我们调用 \texttt{generate\_text\_basic\_stream} 函数时，我们执行的并不是统计推断，而是神经网络推理，也就是把训练好的模型前向应用一次，得到下一个词元的分布，并从这个分布中选出下一个生成的词元。
+
+\end{mySidebar}
+
+\section{通过 KV 缓存加速推理}
+
+既然已经有了一个基本的文本生成函数，我们就可以把注意力转向它在实际运行中会发生什么。你可能已经注意到，上一节的文本生成有点慢。这种缓慢指向了一个关键问题：推理期间的性能。
+
+用 LLM 进行推理时（在这里指根据提示生成文本），运行时性能（即效率）很快就会变得重要，尤其是对长序列而言。虽然本书的代码更强调清晰而非速度，但真实系统往往会使用各种工程技巧来提升推理效率。
+
+这对后面的章节同样有用，因为评估和推理工作流常常需要生成大量词元或大量候选答案，所以这里哪怕小小的提速也会迅速累积成可观的收益。
+
+在接下来的两节中，我们将介绍两种基本技术——KV 缓存和模型编译，如图 2.15 的概览所示，用来加速文本生成。
+
+\myGraphic{0.92}{images/CH02_F15_Raschka2.png}{图 2.15 本书开发推理模型的四个关键阶段概览。本节在预训练 LLM 和我们前面编写的基本文本生成函数的基础上，应用 KV 缓存来加快执行速度。}
+
+如图 2.15 所提到的，一种能提高文本生成速度的工程技巧是 \emph{KV 缓存}，其中 \emph{KV} 指模型注意力机制中用到的键（keys）和值（values）。如果你不熟悉这些术语，也没关系。核心思想是，我们可以把某些中间值缓存起来，在文本生成的每一步复用它们，如图 2.16 所示，从而帮助加速推理。
+
+如图 2.16 所示，KV 缓存的核心思想是把每次迭代中计算出的中间值存入缓存。此前，网络每生成一个新词元，都会把它拼接到整个输入序列之后，再反复送回模型（图中用划掉的方框表示）。这种做法效率很低，因为除新生成的词元之外，其余所有词元在后续迭代中都保持不变。借助 KV 缓存，我们避免了冗余计算，转而直接取回已存储的中间表示。
+
+\myGraphic{0.92}{images/CH02_F16_Raschka2.png}{图 2.16 KV 缓存如何在自回归文本生成中提升效率的示意图。KV 缓存不再在每一步重新处理整个输入序列，而是存储中间表示，供 LLM 复用来生成下一个词元。这样就不再需要在后续每次迭代中把生成的词元与先前的输入拼接起来。}
+
+粗略来说，不使用 KV 缓存生成 \emph{n} 个新词元时，需要在越来越长的序列上反复重新计算，总的解码工作量约为 O(\emph{n}2)。这里的 O(\emph{n}2) 表示总工作量大致随输出长度的平方增长。使用 KV 缓存后，在初始的一次前向之后，每一步只处理新加入的那个词元，把总工作量降到大约 O(\emph{n})，也就是说，总工作量大致与生成的词元数量成正比。
+
+如前所述，像 KV 缓存这类我们用来提升词元生成速度的、与推理无关的 LLM 细节，超出了本书的范围，也不是理解本书后续主题所必需的。不过，感兴趣的读者可以在我的免费文章中了解 KV 缓存机制的更多信息：\emph{Understanding and Coding the KV Cache in LLMs from Scratch}（\href{https://magazine.sebastianraschka.com/p/coding-the-kv-cache-in-llms}{https://magazine.sebastianraschka.com/p/coding-the-kv-cache-in-llms}）。
+
+下面是一个加入了 KV 缓存的 \texttt{generate\_text\_basic\_stream} 修改版，它与代码清单 2.2 中的基本文本生成函数几乎完全相同，区别只在于注释中高亮标出的、与 KV 缓存相关的改动：
+
+\begin{codeboxt}{代码清单 2.4 带 KV 缓存的基本文本生成函数}
+from reasoning_from_scratch.qwen3 import KVCache
+
+@torch.inference_mode()
+def generate_text_basic_stream_cache(
+    model,
+    token_ids,
+    max_new_tokens,
+    eos_token_id=None
+):
+
+    model.eval()
+    cache = KVCache(n_layers=model.cfg["n_layers"])  #1
+    model.reset_kv_cache()                            #1
+
+    out = model(token_ids, cache=cache)[:, -1]       #2
+    for _ in range(max_new_tokens):
+        next_token = torch.argmax(out, dim=-1, keepdim=True)
+
+        if (eos_token_id is not None
+                and torch.all(next_token == eos_token_id)):
+            break
+
+        yield next_token
+        out = model(next_token, cache=cache)[:, -1]  #3
+\end{codeboxt}
+{\noindent\small\textit{\#1 初始化 KV 缓存。 \newline \#2 第一轮中，和之前一样把完整输入提供给模型。 \newline \#3 后续迭代只把 next\_token 送入输入。}\par}
+
+代码清单 2.4 中的 \texttt{generate\_text\_basic\_stream\_cache} 函数与代码清单 2.2 中的 \texttt{generate\_text\_basic\_stream} 函数差别很小。主要区别是引入了一个 \texttt{KVCache} 对象。
+
+在第一次迭代中，和之前一样把完整的输入词元序列交给模型，使用 \texttt{model(token\_ids,} \texttt{cache=cache)}。在底层，KV 缓存会存储为所有这些输入词元计算出的注意力键和值，这样在后续迭代中就无需重新计算。
+
+在接下来的迭代中，我们不再需要传入整个序列，而只用 \texttt{model(next\_token,} \texttt{cache=cache)} 把 \texttt{next\_token} 提供给模型。模型随后会从先前存储的 KV 缓存中取回所需的上下文。
+
+我们来给这个函数计时，看看它是否带来性能收益：
+
+\begin{codebox}
+start_time = time.time()
+generated_ids = []
+
+for token in generate_text_basic_stream_cache(
+    model=model,
+    token_ids=input_token_ids_tensor,
+    max_new_tokens=max_new_tokens,
+    eos_token_id=tokenizer.eos_token_id
+):
+    token_id = token.squeeze(0).tolist()
+    print(
+        tokenizer.decode(token_id),
+        end="",
+        flush=True
+    )
+    next_token_id = token.squeeze(0)
+    generated_ids.append(next_token_id)
+
+end_time = time.time()
+
+output_token_ids_tensor = torch.cat(generated_ids, dim=0)
+generate_stats(output_token_ids_tensor, tokenizer, start_time, end_time)
+\end{codebox}
+
+输出是
+
+\begin{codebox}
+Time: 1.40 sec
+29 tokens/sec
+
+ Large language models are artificial intelligence systems that can
+understand, generate, and process human language, enabling them to
+perform a wide range of tasks, from answering questions to writing
+articles, and even creating creative content.
+\end{codebox}
+
+可以看到，这种方式明显更快，每秒生成 29 个词元，而此前仅为每秒 5 个词元（在 Mac Mini M4 CPU 上测得）。我们还看到生成的文本与之前相同，这是一项重要的健全性检查，用以确认 KV 缓存已正确实现并使用。
+
+下一节中，我们将学习另一种可以进一步提升生成速度的技术，它在后面几章评估模型时会派上用场。更快的生成让我们能在更短的时间内完成更多评估，也更容易高效地比较不同模型或设置。
+
+\section{通过 PyTorch 模型编译加速推理}
+
+上一节中，我们介绍了 KV 缓存这一改善运行时效率的技术，如图 2.17 的概览所示。
+
+\myGraphic{0.92}{images/CH02_F17_Raschka2.png}{图 2.17 本书开发推理模型的四个关键阶段概览。本节在预训练 LLM 和我们前面编写的基本文本生成函数（含 KV 缓存）的基础上，加入模型编译，进一步加快执行速度。}
+
+如图 2.17 所示，在本章余下的这一节中，我们将应用另一种能大幅加速模型推理的技术：使用 \texttt{torch.compile} 进行模型编译。简单来说，\texttt{torch.compile} 会分析模型内部的计算图，并尝试把成组的运算合并成更优化的内核，从而减少 Python 开销和其他执行上的低效。这可以提升文本生成时的运行时性能，尤其是在循环中反复调用同一段模型代码时。
+
+这在之后运行更大规模的评估和更复杂的推理工作流时会很重要，因为哪怕每一步只提速一点，也能在总体上节省可观的运行时间。我们可以这样编译模型：
+
+\begin{codebox}
+major, minor = map(int, torch.__version__.split(".")[:2])
+if (major, minor) >= (2, 8):
+    # 这样可以避免再次触发模型重新编译
+    # in PyTorch 2.8 and newer
+    # if the model contains code like self.pos = self.pos + 1
+    torch._dynamo.config.allow_unspec_int_on_nn_module = True
+
+model_compiled = torch.compile(model)
+\end{codebox}
+
+如果你使用的是 Apple Silicon 的 Mac，并且遇到 \texttt{InductorError}，请确保使用 PyTorch 2.9 或更新版本。
+
+值得注意的是，首次使用编译后的模型执行时，由于要进行初始的编译和优化，可能会比平时更慢。为了更准确地衡量性能提升，我们会把文本生成过程重复多次。
+
+首先，我们用不带缓存的生成函数来测试。代码清单 2.5 中的代码与之前所用的类似，只是我们会连续运行三次。根据系统不同，代码执行可能需要几分钟才能完成。
+
+\begin{codeboxt}{代码清单 2.5 用编译后的模型生成文本}
+for i in range(3):            #1
+
+    start_time = time.time()
+
+    generated_ids = []
+
+    for token in generate_text_basic_stream(
+        model=model_compiled,
+        token_ids=input_token_ids_tensor,
+        max_new_tokens=max_new_tokens,
+        eos_token_id=tokenizer.eos_token_id
+
+    ):
+        token_id = token.squeeze(0).tolist()
+        print(
+            tokenizer.decode(token_id),
+            end="",
+            flush=True
+        )
+
+        next_token_id = token.squeeze(0)
+        generated_ids.append(next_token_id)
+
+    end_time = time.time()
+
+    if i == 0:                #2
+        print("\n\nWarm-up run")   #2
+    else:
+        print(f"\n\nTimed run {i}:")
+
+    output_token_ids_tensor = torch.cat(generated_ids, dim=0)
+    generate_stats(output_token_ids_tensor, tokenizer, start_time, end_time)
+
+    print(f"\n{30*'-'}\n")
+\end{codeboxt}
+{\noindent\small\textit{\#1 我们把词元生成运行三次。 \newline \#2 第一次运行标记为“预热运行”。}\par}
+
+输出如下：
+
+\begin{codebox}
+ Large language models are artificial intelligence systems that can
+understand, generate, and process human language, enabling them to
+perform a wide range of tasks, from answering questions to writing
+articles, and even creating creative content.
+
+Warm-up run
+
+Time: 11.68 sec
+3 tokens/sec
+
+------------------------------
+
+ Large language models are artificial intelligence systems that can
+understand, generate, and process human language, enabling them to
+perform a wide range of tasks, from answering questions to writing
+articles, and even creating creative content.
+
+Timed run 1:
+
+Time: 6.78 sec
+6 tokens/sec
+
+------------------------------
+
+ Large language models are artificial intelligence systems that can
+understand, generate, and process human language, enabling them to
+perform a wide range of tasks, from answering questions to writing
+articles, and even creating creative content.
+
+Timed run 2:
+
+Time: 6.80 sec
+6 tokens/sec
+
+------------------------------
+\end{codebox}
+
+从结果中可以看到，编译后的模型速度略有提升，约为每秒 6 个词元，而此前是每秒 5 个词元。
+
+接下来，我们看看 KV 缓存版本相比之下表现如何。使用的代码与之前相同，只是把 \texttt{generate\_text\_basic\_stream} 换成 \texttt{generate\_text\_basic\_stream\_cache}。
+
+\begin{codeboxt}{代码清单 2.6 使用 KV 缓存并配合编译后的模型生成文本}
+for i in range(3):
+    start_time = time.time()
+    generated_ids = []
+
+    for token in generate_text_basic_stream_cache(
+        model=model_compiled,
+        token_ids=input_token_ids_tensor,
+        max_new_tokens=max_new_tokens,
+        eos_token_id=tokenizer.eos_token_id
+
+    ):
+        token_id = token.squeeze(0).tolist()
+        print(
+            tokenizer.decode(token_id),
+            end="",
+            flush=True
+        )
+
+        next_token_id = token.squeeze(0)
+        generated_ids.append(next_token_id)
+
+    end_time = time.time()
+
+    if i == 0:
+        print("\n\nWarm-up run")
+    else:
+        print(f"\n\nTimed run {i}:")
+
+    output_token_ids_tensor = torch.cat(generated_ids, dim=0)
+    generate_stats(
+        output_token_ids_tensor, tokenizer, start_time, end_time
+    )
+
+    print(f"\n{30*'-'}\n")
+\end{codeboxt}
+
+输出如下：
+
+\begin{codebox}
+ Large language models are artificial intelligence systems that can
+understand, generate, and process human language, enabling them to
+perform a wide range of tasks, from answering questions to writing
+articles, and even creating creative content.
+
+Warm-up run
+
+Time: 8.07 sec
+5 tokens/sec
+
+------------------------------
+
+ Large language models are artificial intelligence systems that can
+understand, generate, and process human language, enabling them to
+perform a wide range of tasks, from answering questions to writing
+articles, and even creating creative content.
+
+Timed run 1:
+
+Time: 0.60 sec
+68 tokens/sec
+
+------------------------------
+
+ Large language models are artificial intelligence systems that can
+understand, generate, and process human language, enabling them to
+perform a wide range of tasks, from answering questions to writing
+articles, and even creating creative content.
+
+Timed run 2:
+
+Time: 0.60 sec
+68 tokens/sec
+
+------------------------------
+\end{codebox}
+
+从输出可以看到，带 KV 缓存但未编译的模型生成速度为每秒 29 个词元，而同一模型编译后达到每秒 68 个词元（在 Mac Mini M4 CPU 上），提速超过两倍。
+
+如果你没有看到任何提升，可以试着用 \texttt{"}\texttt{max-autotune}\texttt{"} 模式来运行 \texttt{torch.compile}，而不是使用默认设置。例如，把
+
+\begin{codebox}
+model = torch.compile(model)
+\end{codebox}
+
+替换为
+
+\begin{codebox}
+model = torch.compile(model, mode="max-autotune")
+\end{codebox}
+
+\begin{mySidebar}{练习 2.2：在非 CPU 设备上重新运行代码}
+
+如果你能使用 GPU，可以把本章的代码在 GPU 设备上重新运行一遍，并把它与 CPU 的运行时间作对比。
+
+\end{mySidebar}
+
+如果你想知道不同模型配置在 Apple Silicon GPU 和高端 NVIDIA GPU 上的对比情况，请参阅表 2.1。
+
+\begin{table}[htbp]
+\centering\small
+\centering
+\caption{表 2.1 不同硬件上不同模型配置的词元生成速度与 GPU 显存占用}
+\begin{tabularx}{\linewidth}{XXXX}
+\toprule
+模式 & 硬件 & 词元/秒 & GPU 显存 \\
+常规 & Mac Mini M4 CPU & 5 & - \\
+常规（编译后） & Mac Mini M4 CPU & 6 & - \\
+KV 缓存 & Mac Mini M4 CPU & 28 & - \\
+KV 缓存（编译后） & Mac Mini M4 CPU & 68 & - \\ \addlinespace
+
+常规 & Mac Mini M4 GPU & 27 & - \\
+常规（编译后） & Mac Mini M4 GPU & 43 & - \\
+KV 缓存 & Mac Mini M4 GPU & 41 & - \\
+KV 缓存（编译后） & Mac Mini M4 GPU & 71 & - \\ \addlinespace
+
+常规 & NVIDIA H100 GPU & 51 & 1.55 GB \\
+常规（编译后） & NVIDIA H100 GPU & 164 & 1.81 GB \\
+KV 缓存 & NVIDIA H100 GPU & 48 & 1.52 GB \\
+KV 缓存（编译后） & NVIDIA H100 GPU & 141 & 1.81 GB \\ \bottomrule
+\end{tabularx}
+\end{table}
+
+如表 2.1 所示，NVIDIA GPU 表现最佳，这在预料之中。而一旦启用了 KV 缓存和编译后的模型，CPU 的表现也出奇地好。不过，有几个重要细节可以解释为什么在这套特定配置下 GPU 的优势没有那么明显。
+
+首先，本章的模型并未针对 GPU 优化。该实现力求在内存占用和计算速度之间取得良好平衡，因为对大多数读者而言，内存才是主要瓶颈。一个针对 GPU 优化的变体会预先分配完整的 K 和 V 张量，一直到最大上下文长度（本例中为 4 万个词元）。这种预分配避免了通过 \texttt{torch.cat} 反复拼接，但也会增加内存消耗。
+
+在上下文很大时，为 K 和 V 各预分配例如 4 万个条目会带来明显的内存占用。另一种做法是在构造时让用户指定固定的上下文大小，但这会引入额外的配置负担。这里的 KV 缓存通过 \texttt{torch.cat} 按需增长，更简单也更省内存，尽管在 GPU 上拼接未预分配的张量会稍慢一些。
+
+我在附赠材料中提供了针对 GPU 优化的版本，其中 KV 缓存变体比常规版本稍快，但占用更多内存（见 \href{https://github.com/rasbt/reasoning-from-scratch/tree/main/ch02/03\_optimized-LLM}{https://github.com/rasbt/reasoning-from-scratch/tree/main/ch02/03\_optimized-LLM}）。
+
+其次，用于基准测试的模型很小。更大的模型能从 KV 缓存和 GPU 优化的内存布局中获益更多。批量推理也是如此，此时 GPU 能更好地打满其计算单元。如果换成更大的模型或更侧重 GPU 的实现，NVIDIA GPU 的性能优势会更加明显。
+
+所有示例都使用单个提示运行（即批量大小为 1）。如果读者想了解性能如何随多个输入扩展，附录 E 中讨论了批量推理。
+
+\section{小结}
+
+\begin{itemize}
+\item 使用 LLM 生成文本涉及多个关键步骤： 搭建编码环境，以便运行 LLM 代码并安装必要的依赖 加载一个预训练基础 LLM（例如 Qwen3 0.6B），后续章节将为它扩展推理能力 初始化并使用分词器，它把文本输入转换为词元 ID，并把输出解码回人类可读的形式
+\item LLM 的文本生成遵循顺序（自回归）过程，模型通过预测最可能的下一个词元，一次生成一个词元。
+\item 文本生成的速度和效率可以通过以下方式改善： KV 缓存，它存储中间状态，避免在每一步重新计算此前已经处理过的输入词元 使用 \texttt{torch.compile} 进行模型编译，以优化运行时性能
+\item 本章通过使用预训练基础 LLM 实现一条可用且高效的文本生成流水线，为后续章节的推理能力打下了技术基础。
+\end{itemize}

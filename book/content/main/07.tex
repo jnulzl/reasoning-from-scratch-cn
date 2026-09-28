@@ -1,0 +1,1096 @@
+\mySmallsection{本章内容}
+\begin{itemize}
+\item 解读训练曲线与评估指标
+\item 防止模型利用奖励信号
+\item 用额外的回复格式奖励扩展任务正确性奖励
+\end{itemize}
+
+此前，我们端到端地实现了用于可验证奖励强化学习（reinforcement learning with verifiable rewards, RLVR）的组相对策略优化（GRPO）\emph{ }算法。现在，如图 7.1 所示，我们将从这个基线出发，重点关注训练运行更长时间时会发生什么。
+
+\myGraphic{0.92}{images/CH07_F01_Raschka2.png}{图 7.1 本书涵盖主题的全景图。本章更深入地讲解用于可验证奖励强化学习的 GRPO 算法。}
+
+具体来说，我们会讨论哪些指标值得追踪（除奖励和准确率之外）、如何及早发现失效模式，以及为什么即使代码“正确”，训练也可能变得不稳定。事实证明，基础版 GRPO 会导致训练不稳定，因此本章还会介绍推理模型训练中使用的实用 GRPO 扩展与修复方法。
+
+\section{改进 GRPO}
+
+我们在上一章实现了组相对策略优化（GRPO, Group Relative Policy Optimization）；现在我们将重新审视那次训练运行，并做更深入的分析。我们还会回顾上一章被省略的 KL 损失项，并讨论一些在实际训练运行中变得重要的实用技巧与算法选择。这些主题汇总在图 7.2 的本章概览中。
+
+\myGraphic{0.92}{images/CH07_F02_Raschka2.png}{图 7.2 本章概览，展示本章涵盖的不同主题}
+
+本章的示例基于真实实验，但解读结果时应谨慎。要对单个设置的效果得出可靠结论，每个实验都需要重复多次并对结果取平均，因为采样和优化中的随机性会导致不同运行之间出现明显差异。话虽如此，这里展示的示例已足以说明主要思想和相关权衡。
+
+\begin{myWarning}{注意}
+ 本章侧重于使用 GRPO 时的额外技术细节和实践考量。如果你觉得本章内容过于技术化，可以跳过，因为下一章并不依赖本章内容。\end{myWarning}
+
+\section{追踪 GRPO 性能指标}
+
+在第 6 章中，我们运行了一个简短的 GRPO 训练循环，并简要查看了结果。例如，一次短运行的输出结构如下：
+
+\begin{codebox}
+[Step 1/50] loss=-0.0000 reward_avg=0.000 avg_resp_len=5.5
+[Step 2/50] loss=-0.0000 reward_avg=0.000 avg_resp_len=6.8
+[Step 3/50] loss=0.3592 reward_avg=0.250 avg_resp_len=7.8
+[Step 4/50] loss=2.7401 reward_avg=0.250 avg_resp_len=56.5
+[Step 5/50] loss=3.3214 reward_avg=0.500 avg_resp_len=251.2
+# ...
+\end{codebox}
+
+我们不妨从这里继续，讨论使用 GRPO 训练时应该追踪哪些指标，以及它们如何帮助我们解读和调试训练行为。
+
+\subsection{执行一次 GRPO 训练运行}
+
+第 6 章的代码在设计上力求在实现完整 GRPO 流水线与保持实现足够精简、可读之间取得平衡。为方便起见，本书配套材料中提供了一个包含相同代码的等价脚本，可以从终端运行（稍后会详细介绍）：\href{https://mng.bz/oZxN}{https://mng.bz/oZxN}。
+
+对于本章介绍的每一项 GRPO 改进，我们都会使用配套材料中的相关参考脚本，以避免在正文中重复大段代码。代码清单 7.1 中的辅助函数会从配套材料下载相关脚本并保存到本地，供你在本章中使用。这样可以避免重复冗长的代码片段，把重点放在 GRPO 实现的主要变化上。
+
+\begin{codeboxt}{代码清单 7.1 用于下载配套材料的辅助函数}
+from pathlib import Path
+import requests
+
+def download_from_github(rel_path, out=None):
+    github_raw_base = (  #1
+        "https://raw.githubusercontent.com/rasbt/"
+        "reasoning-from-scratch/refs/heads/main/"
+    )
+
+    rel_path = Path(rel_path)
+
+    out = Path(out) if out is not None else Path(rel_path.name)#2
+
+    if out.exists():  #3
+        size_kb = out.stat().st_size / 1e3
+        print(f"{out}: {size_kb:.1f} KB (cached)")
+        return out
+
+    r = requests.get(github_raw_base + rel_path.as_posix())#4
+    r.raise_for_status()
+
+    out.write_bytes(r.content)
+    size_kb = out.stat().st_size / 1e3
+    print(f"{out}: {size_kb:.1f} KB")
+\end{codeboxt}
+{\noindent\small\textit{\#1 基础 URL \newline \#2 将 URL 中的文件名用作默认输出文件名。 \newline \#3 如果文件在本地已存在，则跳过下载。 \newline \#4 下载该文件。}\par}
+
+使用前面的辅助函数，可以按如下方式下载第 6 章中包含 GRPO 训练代码的脚本：
+
+\begin{codebox}
+download_from_github(
+    "ch06/02_rlvr_grpo_scripts_intro/rlvr_grpo_original_no_kl.py"
+)
+\end{codebox}
+
+你应该会看到如下输出：\texttt{rlvr\_grpo\_original\_no\_kl.py:} \texttt{13.4} \texttt{KB}。如果下载的文件比这里列出的大小小得多，说明下载可能没有正确完成。这种情况下，请再检查一遍 URL，并参阅故障排查指南获取更多建议：\href{https://github.com/rasbt/reasoning-from-scratch/blob/main/troubleshooting.md}{https://github.com/rasbt/reasoning-from-scratch/blob/main/troubleshooting.md}。 生成的脚本可以像图 7.3 那样从终端运行。
+
+\myGraphic{0.92}{images/CH07_F03_Raschka2.png}{图 7.3 终端中一次 GRPO 训练运行的输出，显示若干训练统计信息，例如损失、平均奖励、词元/秒吞吐量和平均回复长度}
+
+也可以在 Jupyter Notebook 的代码单元中运行该训练脚本，只需在前面加上“\texttt{!}”，即 \texttt{!uv run rlvr\_grpo\_original\_no\_kl.py}。
+
+如果你不使用 \texttt{uv}，可以把图 7.3 中显示的 \texttt{uv run} 替换为 \texttt{python}，如下所示：
+
+\begin{codebox}
+python rlvr_grpo_original_no_kl.py \
+--steps 500 \
+--max_new_tokens 1024
+\end{codebox}
+
+\begin{myWarning}{提示}
+ 可以在前面的代码执行命令中添加 \texttt{--show\_eta}，以显示脚本在你的机器上总运行时间的估计值。\end{myWarning}
+
+如果你不想亲自运行训练代码——考虑到其计算成本，这很合理——配套材料提供了这次运行的日志文件。可以按如下方式下载：
+
+\begin{codebox}
+download_from_github(
+    "ch07/02_logs/ch06_rlvr_grpo_original_no_kl_metrics.txt"
+)
+download_from_github(
+    "ch07/02_logs/ch06_rlvr_grpo_original_no_kl_metrics.csv"
+)
+\end{codebox}
+
+第一个文件以 \texttt{.txt} 结尾，是纯文本输出文件，显示与图 7.3 类似的输出统计信息。第二个文件以 \texttt{.csv} 结尾，是逗号分隔值文件，为这些信息提供了更清晰的结构，便于提取和绘制数据以进行进一步分析。
+
+\subsection{检查 GRPO 训练运行}
+
+为了检查这次训练运行，我们可以使用 Matplotlib 绘制日志文件中的结果。我们将定义一个绘图函数，并在本章中反复使用。
+
+\begin{codeboxt}{代码清单 7.2 用于可视化日志文件中训练结果的绘图函数}
+import csv
+import matplotlib.pyplot as plt
+
+def moving_average(values, window_fraction=0.25):
+
+    window_size = max(1, int(window_fraction * len(values)))#1
+    smoothed = []
+
+    for i in range(len(values)):
+        start_idx = max(0, i - window_size + 1)
+        window_mean = sum(values[start_idx : i + 1]) / (i - start_idx + 1)
+        smoothed.append(window_mean)
+
+    return smoothed
+
+def plot_grpo_metrics(csv_path, columns, save_as=None):
+    data = {name: {"steps": [], "values": []} for name in columns}
+
+    with Path(csv_path).open(newline="") as f: #2
+        reader = csv.DictReader(f)
+        for row in reader:
+            if not row or not row.get("step"):
+                continue
+
+            step = int(row["step"])  #3
+
+            for name in columns:
+                value_str = row.get(name)
+                if value_str:
+                    data[name]["steps"].append(step)
+                    data[name]["values"].append(float(value_str))
+
+    fig, axes = plt.subplots(2, 2, sharex=True, figsize=(6, 4))#4
+    axes = axes.ravel()
+
+    for i, name in enumerate(columns):
+        steps = data[name]["steps"]
+        values = data[name]["values"]
+
+        if not values: #5
+            fig.delaxes(axes[i])
+            continue
+
+        if name == "eval_acc":  #6
+            axes[i].bar(steps, values, width=20)
+        else:
+            axes[i].plot(steps, values, alpha=0.4)
+            axes[i].plot(steps, moving_average(values))
+
+        axes[i].set_ylabel(name)
+
+    for j in (2, 3):
+        if axes[j] in fig.axes:
+            axes[j].set_xlabel("Step")
+
+    plt.tight_layout()
+    if save_as is not None:
+        plt.savefig(save_as)
+    plt.show()
+\end{codeboxt}
+{\noindent\small\textit{\#1 对含噪的训练信号做平滑处理，以揭示训练过程中较长期的趋势。 \newline \#2 打开并读取 CSV 日志文件。 \newline \#3 使用训练步作为所有指标共享的 x 轴。 \newline \#4 创建固定网格，使损失、奖励、回复长度等可以并排显示。 \newline \#5 跳过不存在的指标。 \newline \#6 因为并非每一步都有数据，所以用柱状图展示评估准确率}\par}
+
+我们下载的 \texttt{.csv} 文件包含多个列。使用代码清单 7.2 中定义的 \texttt{plot\_grpo\_metrics} 函数，可以绘制损失、平均奖励、平均回复长度和评估准确率：
+
+\begin{codebox}
+plot_grpo_metrics(
+    "ch06_rlvr_grpo_original_no_kl_metrics.csv",
+    columns=["loss", "reward_avg", "avg_response_len", "eval_acc"]
+)
+\end{codebox}
+
+生成的图如图 7.4 所示。
+
+\myGraphic{0.92}{images/CH07_F04_Raschka2.png}{图 7.4 GRPO 训练运行期间追踪的四个指标（损失、平均奖励、平均回复长度和评估准确率）。橙色中心线表示对最后 25\% 数值的移动平均，有助于在原本含噪的训练信号中揭示整体趋势。评估准确率用柱状图展示，因为它每 50 步才计算一次，而不是每一步都计算。}
+
+图 7.4 的几张图中有几个总体观察值得注意。理想情况下，平均回复长度一开始会增长，同时准确率也随之提升，这里大体上也是如此，不过在训练后期、第 400 步之前出现了一次明显的下降。与 LLM 预训练相比——预训练不在本书范围内，我在上一本书\emph{《从零构建大语言模型》}中有更详细的介绍——损失值本身信息量较小，主要用作合理性检查。总体而言，损失应保持相对稳定。出现一些波动是正常的，但训练进行到一半时出现的较大尖峰有些令人担忧。
+
+平均奖励也应随时间增长。原则上，平均奖励为 1.00 意味着所有采样得到的回复都是正确的，这是我们希望看到的结果，但同时也意味着训练信号已经消失。此时继续训练不太可能有用，提前停止可以节省时间和资源。
+
+最后，在外部目标任务上的表现——这里用 MATH-500 准确率衡量——应该有所提升。在这次运行中，准确率起初上升，随后开始下降，这暗示训练过程存在问题和不稳定。
+
+总的来说，这次训练运行在早期提升很快，约 50 步之后收益开始递减。一个可能的原因是底层算法在较长运行中不够稳定。另一种可能的解释是后面的训练样本更难，但这无法解释评估准确率的下降，因为评估准确率每 50 步都基于同样的 500 个 MATH-500 测试样本计算。
+
+请注意，本节的主要目标是介绍、分析并讨论各种训练指标。我们重点看了一些基础指标，下一节我们会扩展这份清单，考察 GRPO 训练中通常还会追踪的其他指标。
+
+\begin{mySidebar}{计算评估准确率}
+
+评估准确率（\texttt{eval\_acc}）——这里在 MATH-500 基准测试上衡量——默认不会在训练过程中追踪。运行训练脚本时添加 \texttt{--eval\_on\_checkpoint 500} 设置即可定期计算，但不推荐这样做，因为它会显著拖慢训练。另一种做法是训练结束后用第 3 章介绍的 \texttt{evaluate\_math500.py} 脚本单独计算：
+
+\begin{codebox}
+download_from_github(
+    "ch03/02_math500-verifier-scripts/evaluate_math500.py"
+)
+\end{codebox}
+
+然后可以针对给定的检查点按如下方式运行评估：
+
+\begin{codebox}
+uv run evaluate_math500.py \
+  --dataset_size 500 \
+  --checkpoint_path \
+    "checkpoints/rlvr_grpo_original_no_kl/\
+qwen3-0.6B-rlvr-grpo-step00050.pth"
+\end{codebox}
+
+在这次运行中，评估准确率已包含在日志文件里。（如果你不使用 \texttt{uv}，请把 \texttt{uv run} 替换为 \texttt{python}。）
+
+\end{mySidebar}
+
+\section{追踪更深入的 GRPO 性能指标}
+
+除了用于监控 GRPO 训练运行的一小组基础指标外，还有若干额外指标有助于理解训练动态，如图 7.5 所示。
+
+\myGraphic{0.92}{images/CH07_F05_Raschka2.png}{图 7.5 我们已经分析了基础的 GRPO 训练指标；接下来会加入更深入的指标来分析这次训练运行。}
+
+图 7.5 中提到的更深入的指标有两个例子：第 6 章 \texttt{compute\_grpo\_loss} 函数中已经计算过的采样轨迹优势，以及生成序列的熵。
+
+\subsection{追踪优势值}
+
+作为 GRPO 算法的一部分，我们会计算所谓的\emph{优势值}，如第 6 章所述并在图 7.6 中展示。除了在损失计算中的作用外，这些值还有助于分析和理解训练动态。
+
+\myGraphic{0.92}{images/CH07_F06_Raschka2.png}{图 7.6 第 6 章的 GRPO 概览。优势值展示在第 3 步中。}
+
+具体来说，我们基于图 7.6 中的优势值计算两个汇总统计量，即它们的平均值（样本均值）和标准差。
+
+\begin{codeboxt}{代码清单 7.3 计算优势统计量}
+import torch
+
+def compute_advantage_stats(rewards_list):
+
+    rewards = torch.tensor(rewards_list)#1
+    advantages = (rewards - rewards.mean()) / (rewards.std() + 1e-4)
+
+    adv_avg = advantages.mean().item()#2
+    adv_std = advantages.std().item()
+
+    return advantages, adv_avg, adv_std
+\end{codeboxt}
+{\noindent\small\textit{\#1 下面的奖励和优势值就是我们在 GRPO 中已经计算的内容。 \newline \#2 现在，我们还计算平均值（mean）和标准差（std）。}\par}
+
+举个简单的例子，考虑四个奖励值的小样本，与图 7.6 中展示的类似：
+
+\begin{codebox}
+adv, adv_avg, adv_std = compute_advantage_stats([1., 1., 0., 0.])
+print(f"Advantages: {adv}")
+print(f"Advantage mean = {adv_avg:.4f}, std = {adv_std:.4f}")
+\end{codebox}
+
+输出如下：
+
+\begin{codebox}
+Advantages: tensor([ 0.8659,  0.8659, -0.8659, -0.8659])
+Advantage mean = 0.0000, std = 0.9998
+\end{codebox}
+
+由于 GRPO 中优势值的计算方式，它们的均值始终为零。在实践中，这让均值主要成为一个合理性检查，用于确认实现行为符合预期。
+
+标准差的信息量更大。接近 1 的值表示梯度信号被良好地归一化，通常与稳定的更新相关。非常小的值意味着学习信号正在消失，这往往出现在奖励崩塌时。非常大的值则表明更新过于剧烈，可能会破坏训练稳定性。
+
+一种极端情况是采样组内所有奖励都相同。此时归一化后的优势值也相同，标准差为零。结果就是策略梯度更新变为零，模型权重不会发生更新。换句话说，模型无法从这些情况中学习。例如，考虑以下情形：
+
+\begin{codebox}
+adv, adv_avg, adv_std = compute_advantage_stats([0., 0., 0., 0.])
+print(f"Advantages: {adv}")
+print(f"Advantage mean = {adv_avg:.4f}, std = {adv_std:.4f}")
+\end{codebox}
+
+它会打印如下输出：
+
+\begin{codebox}
+Advantages: tensor([0., 0., 0., 0.])
+Advantage mean = 0.0000, std = 0.0000
+\end{codebox}
+
+如果把 \texttt{compute\_advantage\_stats([0., 0., 0., 0.])} 中全为零的奖励替换为 \texttt{compute\_advantage\_stats([1., 1., 1., 1.])} 中全为一的奖励，输出也类似。
+
+在实践中，最好把优势统计量与平均奖励结合起来看。如前所述，平均奖励为 1.0 其实是我们想要的结果，尽管它意味着训练信号已经消失，因为模型把所有题目都答对了。此时，通常就应该停止训练，或者换成更有挑战性的样本。
+
+\subsection{追踪熵}
+
+在追踪和分析上一节介绍的优势统计量之前，我们先介绍另一个指标——\emph{熵}。
+
+熵衡量模型在生成下一个词元时的不确定程度。高熵意味着概率分散在许多可能的词元上，这鼓励探索。低熵意味着大部分概率集中在单个词元上，使模型越来越确定。低熵也可能预示训练崩塌，此时模型停止探索，不断产生相同的输出。
+
+在计算熵之前，我们先简要回顾第 5 章中对数概率值（logprobs）的计算方式，如图 7.7 所汇总。
+
+\myGraphic{0.92}{images/CH07_F07_Raschka2.png}{图 7.7 LLM 生成答案中单个词元（"\texttt{this}"）的对数概率（logprob）计算。LLM 返回该词元的 logits，随后通过 \texttt{torch.softmax()} 转换为 softmax 概率值，或通过 \texttt{torch.log\_softmax()} 转换为 logprob 值。}
+
+在图 7.7 中，我们没有使用通过提示基础模型生成的真实 logits，而是使用假设词表大小为 7 的示例 logits（否则，原始 151,000 词元的词表根本无法在图中可视化这一概念）：
+
+\begin{codebox}
+logits = torch.tensor([
+    0.6667, -2.0000,  1.3333, -0.0000, -0.6667,  2.0000, -1.3333
+])
+\end{codebox}
+
+下面的代码实现了图 7.7 所示的计算：
+
+\begin{codebox}
+logprobs = torch.log_softmax(logits, dim=-1)
+print("All token logprobs:", logprobs)
+
+selected_token = torch.argmax(logprobs)
+selected = logprobs[selected_token]
+print("Selected token ID:", selected_token)
+print("Selected token logprob:", selected)
+\end{codebox}
+
+输出如下：
+
+\begin{codebox}
+All token logprobs: tensor([-2.0442, -4.7109, -1.3776,
+-2.7109, -3.3776, -0.7109, -4.0442])
+Selected token ID: tensor(5)
+Selected token logprob: tensor(-0.7109)
+\end{codebox}
+
+简而言之，\texttt{torch.log\_softmax()} 计算所有 logprob，\texttt{torch.argmax()} 返回最大 logprob 的索引（词元 ID）（这里是 5），而 \texttt{logprobs[selected\_token]} 返回该词元 ID 的 logprob 值（–0.7109）。
+
+熵与 logprob 密切相关。我们把每个概率与其 logprob 相乘，再对这些乘积求和，就得到熵，如图 7.8 所示。原则上，训练时我们也可以追踪比熵更简单的量，比如概率之和或 logprob 之和，但熵是衡量概率分布不确定性的一个广泛使用且易于解释的度量。
+
+\myGraphic{0.92}{images/CH07_F08_Raschka2.png}{图 7.8 熵项通过将词元概率与词元 logprob 相乘来计算。}
+
+图 7.8 显示的熵为 1.37。作为粗略的经验法则，
+
+\begin{itemize}
+\item 极低的熵（≈ 0–0.5）意味着某个词元主导了整个分布。模型高度自信，行为几乎确定。
+\item 中等熵（≈ 1–2）意味着概率分布在一个相当小的词元集合上，这是稳定训练时的典型情况。
+\item 高熵（接近 log × 词表大小；这里 log(7) = 1.9459）意味着概率分散在许多词元上。这种情况下，模型高度不确定，行为几乎随机。
+\end{itemize}
+
+在代码中，可以按如下方式计算熵。
+
+\begin{codeboxt}{代码清单 7.4 计算熵}
+probs = torch.softmax(logits, dim=-1)
+logprobs = torch.log_softmax(logits, dim=-1)
+entropy = torch.sum(-(probs * logprobs))
+
+print("Probs:", probs)
+print("Entropy:", entropy)
+\end{codeboxt}
+
+得到的结果输出如下：
+
+\begin{codebox}
+Probs: tensor([0.1295, 0.0090, 0.2522, 0.0665, 0.0341, 0.4912, 0.0175])
+Entropy: tensor(1.3700)
+\end{codebox}
+
+如前所述，熵量化了模型概率分布在词表上的分散程度。在这个具体例子中，熵为 1.37，表示中等程度的不确定性。某个词元（概率为 0.4912）明显占主导，但其他词元仍具有不可忽视的概率。
+
+在代码清单 7.4 中，我们分别用 \texttt{torch.softmax()} 和 \texttt{torch.log\_softmax()} 计算 probs 和 logprobs。\texttt{torch.log\_softmax()} 函数合并了两个独立的函数调用：\texttt{torch.log(torch.softmax())}。\texttt{torch.exp()} 函数是 \texttt{torch.log()} 的逆运算。这意味着，如果只有 logprobs，我们仍然可以通过 \texttt{torch.exp(logprobs)} 计算出 probs，如下所示：
+
+\begin{codebox}
+print("Probs:", torch.exp(logprobs))
+\end{codebox}
+
+这会输出与之前相同的 probs 值：
+
+\begin{codebox}
+Probs: tensor([0.1295, 0.0090, 0.2522, 0.0665, 0.0341, 0.4912, 0.0175])
+\end{codebox}
+
+基于这一思路，我们可以把上一章的 \texttt{sequence\_logprob} 函数扩展为 \texttt{sequence\_logprob\_and\_entropy} 函数，同时返回 logprobs 和熵。
+
+\begin{codeboxt}{代码清单 7.5 计算序列 logprob 和平均熵}
+def sequence_logprob_and_entropy(model, token_ids, prompt_len):
+
+    logits = model(token_ids.unsqueeze(0)).squeeze(0).float() #1
+    logprobs = torch.log_softmax(logits, dim=-1)   #2
+ #2
+    targets = token_ids[1:]       #2
+    selected = logprobs[:-1].gather(1, targets.unsqueeze(-1)).squeeze(-1) #2
+ #2
+    selected_answer_logprobs = selected[prompt_len - 1:]   #2#2
+    logp_all_steps = torch.sum(selected_answer_logprobs)   #3
+
+    all_answer_logprobs = logprobs[:-1][prompt_len - 1:] #3
+    if all_answer_logprobs.numel() == 0:   #4
+        entropy_all_steps = logp_all_steps.new_tensor(0.0)
+    else:
+        all_answer_probs = torch.exp(all_answer_logprobs)  #5
+        plogp = all_answer_probs * all_answer_logprobs  #6
+        step_entropy = -torch.sum(plogp, dim=-1) #7
+        entropy_all_steps = torch.mean(step_entropy) #8
+
+    return logp_all_steps, entropy_all_steps
+\end{codeboxt}
+{\noindent\small\textit{\#1 下面的代码与第 5 章中的 sequence\_logprob 代码完全相同。 \newline \#2 生成答案词元的 logprob（对答案各步求和） \newline \#3 下面是计算熵的新代码。 \newline \#4 当模型立即返回 EOS 词元时触发的保护措施 \newline \#5 将 logprob 转换为 prob。 \newline \#6 逐元素计算 p * log p。 \newline \#7 对词表中所有 plogp 值求和，计算单个词元（生成步）的熵。 \newline \#8 对所有答案步取平均，计算给定 LLM 答案的平均熵。}\par}
+
+为了在训练中计算并追踪熵，我们可以在 \texttt{compute\_grpo\_loss} 中用 \texttt{sequence\_logprob\_and\_entropy} 函数替代 \texttt{sequence\_logprob} 函数。
+
+请注意，图 7.8 展示的是采样轨迹中单个词元的熵计算（\texttt{step\_entropy}），而 \texttt{sequence\_logprob\_and\_entropy} 返回的是所有答案词元的平均熵；也就是说，\texttt{entropy\_all\_steps = torch.mean(step\_entropy)}。对于答案 \texttt{"}\texttt{this} \texttt{is} \texttt{the} \texttt{LLM} \texttt{response}\texttt{"}，步熵指的是单个词元位置处的熵（例如 \texttt{"}\texttt{this}\texttt{"} 处），而平均熵是 \texttt{"}\texttt{this} \texttt{is} \texttt{the} \texttt{LLM} \texttt{response}\texttt{"} 中所有答案词元的均值。
+
+有了这个修改后的 \texttt{sequence\_logprob\_and\_entropy} 函数，我们现在可以把熵作为训练期间模型生成行为的诊断工具。通过追踪生成答案词元的平均熵，我们可以监控模型是表现随机（高熵）、保持探索（中等熵），还是变得过度自信且确定（低熵）。
+
+具体来说，我们期望随着模型越来越自信，熵会逐渐下降。熵突然崩塌到极低值，可能是训练不稳定的警告信号。
+
+\subsection{绘制更多 GRPO 指标}
+
+我们不妨在之前计算优势统计量和熵的基础上，在一次具体的训练运行中分析这些量。为此，可以修改 \texttt{compute\_grpo\_loss} 以使用 \texttt{sequence\_logprob\_and\_entropy}，然后在内部调用 \texttt{compute\_grpo\_loss} 的 \texttt{train\_rlvr\_grpo} 中打印并记录熵。为避免在这里重复一大段代码清单，修改后的完整版本放在本书配套材料中。可以按如下方式下载：
+
+\begin{codebox}
+download_from_github(
+    "ch07/03_rlvr_grpo_scripts_advanced/7_3_plus_tracking.py"
+)
+\end{codebox}
+
+这段代码可以像我们之前使用的训练脚本那样运行：
+
+\begin{codebox}
+uv run 7_3_plus_tracking.py \
+    --steps 500  \
+    --max_new_tokens 1024
+\end{codebox}
+
+由于训练耗时较长，你可以下载生成的 CSV 日志文件，并按如下方式绘制新的优势统计量和熵：
+
+\begin{codebox}
+download_from_github(
+    "ch07/02_logs/7_3_plus_tracking_metrics.csv"
+)
+plot_grpo_metrics(
+    "7_3_plus_tracking_metrics.csv",
+    columns=["reward_avg", "adv_avg", "adv_std", "entropy_avg"]
+)
+\end{codebox}
+
+我们已经看过平均奖励，这里再次列出以便比较。生成的图如图 7.9 所示。这里的“中等熵”仍应理解为探索行为，只是不像后期的高熵状态那样随机。
+
+\myGraphic{0.92}{images/CH07_F09_Raschka2.png}{图 7.9 可视化 GRPO 训练运行期间追踪的优势统计量和熵（旁边是之前追踪的平均奖励）}
+
+我们先来分析图 7.9 中的优势值。正如 GRPO 式归一化所预期的那样，平均优势在整个训练过程中始终为零。由于优势值是相对于组均值计算的，按设计它们的和为零。如前所述，这个指标主要用作合理性检查。如果平均优势偏离零，就说明存在 bug 或归一化问题。
+
+优势值的标准差信息量更大。训练初期我们看到方差相对较高，说明模型产生的采样轨迹质量差异很大。随着时间推移，优势标准差逐渐下降并趋于稳定，意味着采样轨迹的质量变得更加接近。关键在于，只要优势标准差保持非零且相对稳定（即该值变化不大），就仍然存在可用的学习信号，训练仍在进行。
+
+接下来看熵。训练初期，熵相对较低且相当平缓，说明模型的行为基本是确定的。提高采样温度会带来更多样化的采样轨迹，不过它并不改变模型本身的内在熵。
+
+训练后期，大约在第 200 步之后，熵明显上升。这意味着下一个词元的概率分布更加分散，模型的行为更加随机。极低的熵也可能预示崩塌，即模型反复产生相同或非常相似的输出。在这次运行中，熵、不断上升的平均奖励以及未消失的优势标准差表明，这是一种尚算健康的探索，而非崩塌。这也与之前的 MATH-500 评估准确率一致，后者保持在 30\%–40\% 区间。这不算好，但也没有接近零。
+
+这里的主要结论是，每个指标讲述的是故事中略有不同的一部分，把它们放在一起并结合上下文来看才最有用。
+
+\section{使用裁剪策略比率稳定序列级 GRPO}
+
+到目前为止，我们主要关注分析 GRPO 的训练结果。接下来，我们将开始对 GRPO 算法本身进行增强。我们目前使用的版本是 GRPO 的简化形式，本节将在 GRPO 损失中引入\emph{裁剪策略比率}（clipped policy ratio），如图 7.10 的概览所示。
+
+\myGraphic{0.92}{images/CH07_F10_Raschka2.png}{图 7.10 我们已经绘制了基础和进阶的 GRPO 训练指标。现在我们要修改 GRPO 算法，加入裁剪策略比率。}
+
+裁剪策略比率有助于限制过大的模型权重更新，让训练更稳定，尤其是在较长的运行中。理想情况下，我们希望确保模型性能不会像之前那样出现明显下降。
+
+\subsection{计算裁剪策略比率}
+
+裁剪策略比率衡量当前策略（即正在训练的 LLM）相对于其早期版本发生了多大变化。它把更新步之前计算的序列 logprob 与更新之后计算的序列 logprob 进行比较。可以这样理解：如果 LLM 之前对某个答案赋予了一定的似然，那么在我们调整它的权重之后，它认为同一个答案的可能性提高了多少、又降低了多少？
+
+在图 7.11 所示的 GRPO 流程中，这对应的是把第 4 步用旧权重参数计算的 logprob，与更新后的模型（在第 6 步更新）产生的 logprob 进行比较。
+
+\myGraphic{0.92}{images/CH07_F11_Raschka2.png}{图 7.11 第 6 章的 GRPO 概览。现在我们将使用第 4 步的序列 logprob 来计算策略比率和裁剪策略比率。}
+
+等我们在代码中实现这一概念后，就会更清楚了。不过首先回顾一下：在第 6 章中，我们按如下方式计算策略梯度损失。
+
+\begin{codeboxt}{代码清单 7.6 计算策略梯度}
+# ...  #1
+
+rewards = torch.tensor([1., 1., 0., 0.])#2
+
+logprobs = torch.tensor([-7.9243, -20.1546, -16.6130, -23.3677])#3
+
+advantages = (rewards - rewards.mean()) / (rewards.std() + 1e-4)
+
+pg_loss = -(advantages.detach() * logprobs).mean()
+print("Policy gradient loss:", pg_loss)
+\end{codeboxt}
+{\noindent\small\textit{\#1 为简洁起见，计算采样轨迹的代码已省略 \newline \#2 计算奖励。 \newline \#3 计算序列 logprob。}\par}
+
+得到的策略梯度值为 –2.5764，也显示在图 7.11 中。
+
+接下来，我们计算策略比率和裁剪策略比率，如图 7.12 所示。策略比率和裁剪策略比率通过把策略先前版本产生的 logprob（“旧”logprob）与当前策略产生的 logprob（“新”logprob）进行比较来计算。其数学推导超出本章范围，但如果你感兴趣，可以在“Proximal Policy Optimization Algorithms\emph{”} 这篇论文中找到更多细节（\href{https://arxiv.org/pdf/1707.06347}{https://arxiv.org/pdf/1707.06347}）。
+
+\myGraphic{0.92}{images/CH07_F12_Raschka2.png}{图 7.12 根据“新”和“旧”logprob 计算我们添加到 GRPO 中的策略比率（“ratio”）和裁剪策略比率（“clipped ratio”）}
+
+在下面这段对图 7.12 所示计算的代码演示中，我们复用代码清单 7.6 中的 logprob 作为 \texttt{old\_logps}，假设已经完成一次模型更新，然后用更新后的模型计算相应的 \texttt{new\_logps}。在实践中，两者都使用同一个提示来计算，以确保旧策略与当前策略之间的比较公平、对等。
+
+\begin{codeboxt}{代码清单 7.7 计算策略比率和裁剪策略比率}
+new_logps = logprobs
+
+old_logps = torch.tensor([#1
+    -10.9243,   # -7.9243
+    -20.3546,   # -20.1546
+    -14.6130,   # -16.6130
+    -23.3677,   # -23.3677
+])
+
+log_ratio = new_logps - old_logps
+ratio = torch.exp(log_ratio)
+clip_eps = 10.0
+clipped_ratio = torch.clamp(ratio, 1.0 - clip_eps, 1.0 + clip_eps)
+
+print("Ratio:        ", ratio)
+print("Clipped ratio:", clipped_ratio)
+\end{codeboxt}
+{\noindent\small\textit{\#1 new\_logps 的值在注释中并排展示。}\par}
+
+得到的未裁剪策略比率和裁剪策略比率如下：
+
+\begin{codebox}
+Ratio:         tensor([20.0855,  1.2214,  0.1353,  1.0000])
+Clipped ratio: tensor([11.0000,  1.2214,  0.1353,  1.0000])
+\end{codebox}
+
+这个比率告诉我们旧 logprob 与新 logprob 有多不同。如果两者完全相同，比率就是 1.0。
+
+我们用来计算策略梯度损失裁剪版本的 \texttt{clipped\_ratio}，限制了新策略在单次更新中能偏离旧策略的程度。如果新模型对某条采样轨迹赋予的概率突然远高于或远低于旧模型，原始比率就可能变得非常大或非常小。如果不加裁剪，这会大幅放大优势项，可能导致非常大的梯度步，从而破坏训练稳定性。
+
+在实践中，使用代码清单 7.7 中的 \texttt{clip\_eps} 参数时，通常会把比率限制在 1 ± \texttt{clip\_eps} 的范围内。例如，DeepSeek-R1 使用了 \texttt{clip\_eps = 10}，对应的是非常弱的裁剪。其他 RL 训练配置，例如使用 PPO 算法的 RLHF，往往使用小得多的值，如 0.1，从而实现激进的裁剪，使每步策略变化显著更小。
+
+可以看到，在 \texttt{10.0} 这个非常宽松的 \texttt{clip\_eps} 值下，只有第一个值被从 20.0855 裁剪到 11.0000。
+
+\begin{myWarning}{注意}
+ \texttt{clip\_eps} 中的“eps”是 epsilon（ε）的缩写，这是数学中常用来表示一个小的正量的希腊字母。\end{myWarning}
+
+接下来，我们会在损失计算中应用 \texttt{ratio} 和 \texttt{clipped\_ratio}。此前，我们直接把优势值乘以 logprob。现在，我们会改为用策略比率来缩放优势值，并使用裁剪后的目标来限制每条采样轨迹对更新的影响程度。
+
+\begin{codeboxt}{代码清单 7.8 计算裁剪后的策略梯度损失}
+adv = advantages.detach()  #1
+
+unclipped = ratio * adv
+clipped = clipped_ratio * adv
+
+obj = torch.minimum(unclipped, clipped)#2
+
+clipped_pg_loss = -torch.mean(obj)
+policy_ratio = torch.mean(ratio)
+
+print("Clipped policy gradient loss:", clipped_pg_loss)
+print("Policy ratio:", policy_ratio)
+\end{codeboxt}
+{\noindent\small\textit{\#1 将优势值视为固定的学习信号（不通过奖励进行反向传播）。 \newline \#2 限制过大的策略比率更新。}\par}
+
+得到的裁剪策略梯度损失为 –2.3998，略低于我们本节前面计算的普通策略梯度损失（–2.5764）。这一微小差异是合理的，因为在我们的例子中，由于 \texttt{clip\_eps = 10.0} 这个宽松的比率，只有一个策略比率被实际裁剪。总的来说，这种裁剪可以防止可能破坏训练稳定性的过度激进更新。幅度大、过于激进的更新会让策略在单步中移动过远，导致词元概率发生剧烈偏移，进而引发奖励崩塌、熵崩塌或其他相关问题。
+
+此外，我们还计算平均策略比率 \texttt{policy\_ratio = torch.mean(ratio)}，可以在训练运行期间追踪并报告它。这里的结果是相对较大的 5.6106。这么大的策略比率意味着更新后的策略（模型）对采样得到的词元赋予的概率远高于之前的策略。
+
+\subsection{使用裁剪策略比率进行训练}
+
+我们可以把代码清单 7.7 和 7.8 中的裁剪策略比率和策略损失计算应用起来，看看它们是否有助于稳定训练。
+
+修改后的代码可以从配套材料中按如下方式下载：
+
+\begin{codebox}
+download_from_github(
+    "ch07/03_rlvr_grpo_scripts_advanced/7_4_plus_clip_ratio.py"
+)
+\end{codebox}
+
+然后像之前一样运行它：
+
+\begin{codebox}
+uv run 7_4_plus_clip_ratio.py \
+    --steps 500  \
+    --max_new_tokens 1024
+\end{codebox}
+
+如上一节所述，策略比率把当前策略下计算的 logprob 与策略先前版本产生的 logprob 进行比较。在实践中，这意味着我们首先需要一批采样回复，它们的 \texttt{old\_logps} 是在固定的参考策略下测得的。然后我们可以把同样的这些回复与在优化过程中不断变化的当前模型进行比较，从而形成裁剪策略比率的更新。
+
+DeepSeek-R1 在大规模上这样做：一次性生成一个很大的采样轨迹池（8,192 条回复），把这些回复固定下来，然后分 16 个小批量逐步处理。从高层看，过程如下：
+
+\begin{enumerate}
+\item 复制当前模型作为参考策略。
+\item 使用参考策略采样一个大的采样轨迹池。
+\item 把这些固定的采样轨迹切分成小批量。
+\item 对每个小批量： 在参考模型下计算 \texttt{old\_logps}。 在当前模型下计算 \texttt{new\_logps}（当前模型在每次小批量更新后都会变化）。 更新当前模型。
+\item 更新参考模型。
+\end{enumerate}
+
+受资源限制，我们无法像 DeepSeek-R1 那样生成那么多采样轨迹和小批量，所以会用一个更小的近似方案。我们不生成一个巨大的固定采样轨迹池再切分成小批量，而是生成一小批采样轨迹，在这批数据上更新模型，然后用新的一批重复该过程。\texttt{7\_4\_plus\_clip\_ratio.py} 脚本中的过程如下：
+
+\begin{enumerate}
+\item 复制当前模型作为参考策略。
+\item 使用参考策略采样八条轨迹。
+\item Then, 在参考模型下计算 \texttt{old\_logps}。 在当前模型下计算 \texttt{new\_logps}。 更新当前模型。
+\item 用不同的采样轨迹重复第 2 步和第 3 步（默认再做一次），而不是使用小批量。
+\item 更新参考模型。
+\end{enumerate}
+
+简而言之，DeepSeek-R1 一次性生成一个巨大的采样轨迹池，然后在刷新参考模型之前跨小批量重复使用它。在我们的代码中，我们通过多次生成一小批采样轨迹，以更低成本模拟这一思路。
+
+\texttt{7\_4\_plus\_clip\_ratio.py} 训练运行的日志文件可以按如下方式下载并可视化：
+
+\begin{codebox}
+download_from_github(
+    "ch07/02_logs/7_4_plus_clip_ratio_metrics.csv"
+)
+plot_grpo_metrics(
+    "7_4_plus_clip_ratio_metrics.csv",
+    columns=["loss", "reward_avg", "avg_response_len", "eval_acc"]
+)
+\end{codebox}
+
+图 7.13 展示了生成的图。与之前的训练运行相比，这次使用裁剪策略比率的训练更稳定，在第 400 步左右没有出现平均奖励或评估准确率的明显下降。
+
+\myGraphic{0.92}{images/CH07_F13_Raschka2.png}{图 7.13 使用裁剪策略比率的 GRPO 训练运行中选出的指标}
+
+我们也可以绘制并检查其他指标\texttt{,} 例如 \texttt{policy\_ratio}、\texttt{adv\_avg}、\texttt{adv\_std} 和 \texttt{entropy\_avg}。我把这一点留作练习，供你自行尝试。
+
+\section{使用 KL 项控制模型变化的幅度}
+
+在第 6 章中，为了让讲解更易掌控，我们跳过了 GRPO 算法中的 KL 损失项。为了补全 GRPO 算法，我们现在加入 KL 损失项，如图 7.14 所述。
+
+\myGraphic{0.92}{images/CH07_F14_Raschka2.png}{图 7.14 实现 KL 损失项，它是原始 GRPO 算法的一部分}
+
+\begin{myWarning}{注意}
+ 如果你熟悉强化学习，可能会认出我们到目前为止实现的东西本质上就是带有组归一化优势的 REINFORCE\emph{ }。（参见 \href{https://lilianweng.github.io/posts/2018-04-08-policy-gradient/}{https://lilianweng.github.io/posts/2018-04-08-policy-gradient/ 了解 REINFORCE 方法}。）\end{myWarning}
+
+KL 是 \emph{Kullback–Leibler }散度的缩写，它衡量当前策略（即正在训练的 LLM）偏离参考策略的程度，参考策略通常是训练开始时的原始模型。KL 项充当一种约束（技术上称为\emph{正则化项}），抑制过大的更新，使模型保持接近其原始行为，防止剧烈或不稳定的变化。
+
+这与我们之前介绍的裁剪策略比率密切相关。借助裁剪策略比率，我们限制了单次更新步的幅度。KL 项是控制模型能变化多少的另一种机制。裁剪策略比率着重限制步与步之间的变化，而 KL 项通常用于控制更长训练轨迹上的变化。
+
+\subsection{实现 KL 损失项}
+
+图 7.15 展示了作为 GRPO 算法一部分的 KL 损失项计算。KL 损失项的计算涉及比较 logprob 和参考 logprob。它通过对这些对应 logprob 之间的差值求和来计算。
+
+\myGraphic{0.92}{images/CH07_F15_Raschka2.png}{图 7.15 GRPO 算法概览，右侧加入了 KL 损失项计算}
+
+KL 损失项的值较小，说明当前模型与参考模型输出的 logprob 相对接近，即当前模型相比参考模型变化不大。这通常有利于稳定性，因为它能防止行为出现大幅突变。但如果 KL 损失项长时间保持过小，也可能说明学习受限。
+
+随后把得到的 KL 损失项加到策略梯度损失上，计算出总损失，这样即使某些权重更新带来了高奖励，只要它们大幅增加了与参考模型的偏离，就会在训练中受到惩罚。
+
+在裁剪策略比率那一节，我们在每次迭代中替换参考模型。对于 KL 损失项，用于计算参考 logprob 的参考模型是训练开始时的原始模型，它要么保持不变，要么很少被替换（在 DeepSeek-R1 中每 400 步替换一次）。
+
+下面的代码展示如何修改 \texttt{compute\_grpo\_loss} 函数以纳入这个 KL 损失项。为避免代码重复，代码清单 7.9 没有展示修改后的完整 \texttt{compute\_grpo\_loss\_with\_kl} 函数，而是聚焦于我们需要对 \texttt{compute\_grpo\_loss} 函数所做的改动。新增部分用注释标出，或位于 \texttt{if kl\_coeff} 代码块内部。
+
+\begin{codeboxt}{代码清单 7.9 在 GRPO 损失计算中加入 KL 项}
+import copy
+
+kl_coeff = 0.0  #1
+
+if kl_coeff: #2
+    ref_model = copy.deepcopy(model).to(device)
+    ref_model.eval()
+    for p in ref_model.parameters():
+        p.requires_grad = False
+else:
+    ref_model = None
+
+def compute_grpo_loss_with_kl(
+    model,
+    ref_model,  #3
+    # ...
+    kl_coeff=0.02,  #4
+):
+    roll_logps, roll_ref_logps, roll_rewards, samples = [], [], [], []
+    # ...
+
+    for _ in range(num_rollouts):
+        token_ids, prompt_len, text = sample_response(
+        # ...
+        )
+
+        if kl_coeff: #5
+            with torch.no_grad():
+                ref_logp = sequence_logprob(
+                    ref_model, token_ids, prompt_len
+                )
+        else:
+            ref_logp = None
+
+        reward = reward_rlvr(text, example["answer"])
+
+        roll_rewards.append(reward)
+        roll_logps.append(logp)
+        if kl_coeff:
+            roll_ref_logps.append(ref_logp)
+
+        # ...
+
+    rewards = torch.tensor(roll_rewards, device=device)
+    advantages = (rewards - rewards.mean()) / (rewards.std() + 1e-4)
+
+    logps = torch.stack(roll_logps)
+    if kl_coeff:
+        ref_logps = torch.stack(roll_ref_logps).detach()
+
+    pg_loss = -(advantages.detach() * logps).mean()
+
+    if kl_coeff: #6
+        kl_loss = kl_coeff * torch.mean(logps - ref_logps)
+    else:
+        kl_loss = torch.tensor(0.0, device=logps.device)
+
+    loss = pg_loss + kl_loss #7
+\end{codeboxt}
+{\noindent\small\textit{\#1 kl\_coeff = 0.0 会停用 KL 项，此时代码与之前类似。 \newline \#2 复制原始模型并禁用梯度，使其不被更新。 \newline \#3 新增：传入参考模型。 \newline \#4 新增：指定 KL 强度。 \newline \#5 用参考模型计算 logprob。 \newline \#6 计算 KL 损失项。 \newline \#7 新增：把 KL 损失项加到策略梯度损失上。}\par}
+
+请注意，加入 KL 损失项会增加资源消耗，因为我们现在需要额外保留一份原始模型的副本。这一惩罚的强度由 \texttt{kl\_coeff} 控制。\texttt{kl\_coeff} 值越大，对当前策略偏离参考模型程度的约束就越强。
+
+代码清单 7.9 顶部设置 \texttt{kl\_coeff = 0.0}，只是为了让我们在代码环境中运行这段简略代码片段时不会崩溃。在实践中，\texttt{kl\_coeff} 通常是一个介于 0.001 和 0.05 之间的小值。
+
+\subsection{使用 KL 损失项进行训练}
+
+下面这段来自本书配套材料的脚本实现了我们讨论过的 KL 损失项代码修改：
+
+\begin{codebox}
+download_from_github(
+    "ch07/03_rlvr_grpo_scripts_advanced/7_5_plus_kl.py"
+)
+\end{codebox}
+
+和之前一样，我们可以按如下方式运行它：
+
+\begin{codebox}
+uv run 7_5_plus_kl.py \
+    --steps 500  \
+    --max_new_tokens 1024
+\end{codebox}
+
+我们来看看使用上述设置执行的一次训练运行的日志文件：
+
+\begin{codebox}
+download_from_github(
+    "ch07/02_logs/"
+    "7_5_plus_kl_metrics.csv"
+)
+plot_grpo_metrics(
+    "7_5_plus_kl_metrics.csv",
+    columns=["loss", "reward_avg", "avg_response_len", "eval_acc"]
+)
+\end{codebox}
+
+生成的图如图 7.16 所示。
+
+\myGraphic{0.92}{images/CH07_F16_Raschka2.png}{图 7.16 加入 KL 损失项后一次 GRPO 训练运行中选出的指标。这里左上角的损失指的是 GRPO 总损失，即策略梯度损失与 KL 损失项之和。}
+
+正如右下角的准确率图所示，前 50 步让模型性能明显提升，准确率从略高于 15\% 提高到约 40\%。随后我们看到一次全面崩塌：损失值爆炸，平均奖励趋近于 0。与之相伴的是评估准确率骤降，同样趋近于 0\%。
+
+手动检查生成的回复时，我们可以看到模型最终开始产生无意义的文本和随机词元，例如 \texttt{"}\texttt{framework.raises Self profess(import}\texttt{"}。造成这种行为的原因可能有几个。
+
+首先，KL 项是用答案词元上求和后的 logprob 计算的，即 \texttt{kl\_loss = kl\_coeff * mean(new\_logps - ref\_logps)}。这里 \texttt{new\_logps} 是在当前可训练策略下计算的，而 \texttt{ref\_logps} 是在参考策略下计算的，参考策略即训练开始时的原始模型。这个参考策略与训练后期步骤中的旧采样轨迹策略并不相同。旧策略是用于生成采样回复的近期快照，而参考策略则固定在初始模型上。
+
+\begin{mySidebar}{KL 方向与采样轨迹采样}
+
+KL 散度是有方向的。如果我们从旧采样轨迹策略中采样回复，并想衡量当前策略与那个旧策略相差多少，对应的样本级 logprob 差值应为 \texttt{old\_logps} - \texttt{new\_logps}。
+
+然而，这里的 KL 式项有不同目的。它意在惩罚当前策略相对固定参考策略的漂移，所以对应的 logprob 差值是 \texttt{new\_logps} - \texttt{ref\_logps}。
+
+微妙之处在于，这些回复是由旧采样轨迹策略生成的，而不是由更新后的当前策略生成的。因此，\texttt{mean(new\_logps - ref\_logps)} 是一个简化的采样代理，而非精确的 KL 估计。更严谨的离策略版本会使用重要性采样校正，我们将在下一小节讨论。
+
+\end{mySidebar}
+
+由于该项没有按长度归一化，其量级会随回复长度增长。这并不意味着更长的输出总会受到青睐，因为根据当前策略与参考策略之间逐词元的 logprob 差异，额外的词元既可能增大损失，也可能减小损失。然而，由于采样轨迹是从旧策略采样的，除非我们从当前策略采样，或者应用重要性采样校正，否则这个简单的采样代理并不是当前策略的精确 KL 估计。结果就是目标函数变得对长度敏感，在某些情况下会让训练偏向更长的输出——这里不断增长的回复长度正说明了这一点——并可能破坏训练稳定性。
+
+其次，一旦奖励在第 200 步左右崩塌到零，KL 项就成了唯一剩下的梯度信号来源。当所有奖励都为零时，优势值也为零，于是策略梯度损失不再贡献任何梯度。KL 项仍然活跃，并开始主导更新。在一个精确的“相对参考策略的 KL”目标中，这会把模型拉回参考策略。然而，这里使用的简化 KL 代理 \texttt{kl\_loss = kl\_coeff * mean(new\_logps - ref\_logps)} 只在旧策略采样得到的轨迹上求值，而且 \texttt{ref\_logps} 在优化过程中充当常数。在这些固定的采样词元上，最小化损失主要是压低当前模型在采样动作上的概率，这会让下一个词元的分布更加分散并推高熵。观察到的行为更应理解为这个采样代理的一种失效模式，它可能导致输出越来越随机，并让评估准确率跌到 0.0\%。如果你愿意，可以绘制其他评估指标，例如 \texttt{policy\_ratio}、\texttt{adv\_avg}、\texttt{adv\_std} 和 \texttt{entropy\_avg}，确认熵变得非常大。
+
+KL 项是 GRPO 算法的标准组成部分，这也是我在这里介绍它的原因，不过近期有几项工作报告称，去掉它之后模型反而能训练得更好。例子包括 Dr. GRPO、Olmo 3 和 DeepSeek-V3.2，它们都观察到在减弱或省略 KL 项后稳定性或性能有所提升（更详细的参考文献见附录 A）。
+
+\begin{mySidebar}{使用 KL 项提升训练稳定性}
+
+另一种做法是不移除 KL 项，而是通过几种方式提升训练稳定性。首先，可以把 \texttt{kl\_coeff} 从 0.02 减小到更小的值（例如 0.001）以减弱 KL 惩罚，不过在我的实验中这样并不够。
+
+由于我们看到回复长度持续增长直至达到上限，另一个选择是对序列 logprob 做长度归一化，即除以生成的词元数，近似得到平均逐词元 logprob。这可以减少为了累积更大的绝对 logprob 差值而增加回复长度的动机。
+
+第三种选择是使用基于\emph{重要性采样}的重新加权 KL 项，这是 DeepSeek-V3.2 提出的。这很重要，因为采样轨迹是由旧策略生成的，而 KL 项意在约束当前策略相对参考策略的偏离。我们可以不使用
+
+\begin{codebox}
+kl_loss = kl_coeff * torch.mean(logps - ref_logps)
+\end{codebox}
+
+而改用
+
+\begin{codebox}
+kl_loss = (
+    kl_coeff * torch.mean(torch.exp(new_logps - old_logps)
+    * (new_logps - ref_logps)
+)
+\end{codebox}
+
+这里的 \texttt{torch.exp(new\_logps - old\_logps)} 重要性权重校正了采样轨迹由旧策略生成这一事实，它对当前策略很少产生的样本降权，对当前策略会产生的样本升权。
+
+最后，我们可以加入一个小的格式奖励，防止优势值崩塌到零（格式奖励我们会在下一节重新讨论）。话虽如此，对于数学数据，一个常见建议是完全省略 KL 项（例如 Dr. GRPO、Olmo 3 和 DeepSeek-V3.2），这还能简化代码并降低资源需求，因为我们不必在内存中额外保留一个参考模型。
+
+\end{mySidebar}
+
+\section{添加显式格式奖励}
+
+到目前为止，我们在训练模型时只使用了一种可验证奖励，即答案正确性奖励。在实践中，这已足以用 RLVR 训练推理模型。此外还常见使用一个或多个辅助奖励，例如\emph{格式奖励}，用于检查生成的答案是否遵循某些格式规范（图 7.17）。
+
+\myGraphic{0.92}{images/CH07_F17_Raschka2.png}{图 7.17 实现一种格式奖励，鼓励模型生成 \texttt{\textless{}think\textgreater{}...\textless{}/think\textgreater{} }词元}
+
+具体来说，我们会聚焦于一种格式奖励，鼓励模型使用 \texttt{\textless{}think\textgreater{}...\textless{}/think\textgreater{}} 词元。
+
+\subsection{使用 \textless{}think\textgreater{} 词元}
+
+一些推理模型，例如 DeepSeek-R1 和 Qwen3，使用特殊的 \texttt{\textless{}think\textgreater{}} 和 \texttt{\textless{}/think\textgreater{}} 词元。这些是普通文本词元，用来标记模型中间推理过程的开始和结束。我们可以提示模型在 \texttt{\textless{}think\textgreater{} ... \textless{}/think\textgreater{}} 内写出逐步推理，然后在这些标签之外给出最终答案。这种做法是可选的，但它让输出结构变得明确，有助于把推理与最终结果区分开。
+
+为了说明这一概念，我们先加载之前使用的基础模型的分词器。
+
+\begin{codeboxt}{代码清单 7.10 加载基础模型的分词器}
+from reasoning_from_scratch.ch02 import get_device
+from reasoning_from_scratch.ch03 import load_model_and_tokenizer
+
+device = get_device()
+model, tokenizer_base = load_model_and_tokenizer(
+    which_model="base",
+    device=device,
+    use_compile=False
+)
+\end{codeboxt}
+
+接下来，我们用该分词器对 \texttt{\textless{}think\textgreater{}} 进行编码：
+
+\begin{codebox}
+print(tokenizer_base.encode("<think>"))
+\end{codebox}
+
+输出是 \texttt{[13708, 766, 29]}，这意味着分词器把 \texttt{\textless{}think\textgreater{}} 词元拆成了若干子词词元。这表明 \texttt{\textless{}think\textgreater{}} 词元并不在分词器的词表中。
+
+如今，在开发分词器和构建 LLM 的嵌入层时，开发者往往会预留一些未使用的占位词元 ID，供微调模型时用于特定目的。Qwen3 基础模型的分词器有一些空的占位槽，我们可以用来添加 \texttt{\textless{}think\textgreater{}}：
+
+\begin{codebox}
+tokenizer_base._tok.add_special_tokens(
+  ["<tool_response>", "</tool_response>", "<think>", "</think>"]
+)
+\end{codebox}
+
+注意，我们在前面的代码中还添加了 \texttt{\textless{}tool\_response\textgreater{}} 和 \texttt{\textless{}/tool\_response\textgreater{}} 词元，以匹配 Qwen3 推理变体的分词器，这个我们稍后会讨论。不过先来看看修改后的基础分词器现在是否支持新添加的 \texttt{\textless{}think\textgreater{}} 和 \texttt{\textless{}/think\textgreater{}} 词元：
+
+\begin{codebox}
+print(tokenizer_base.encode("<think>"))
+print(tokenizer_base.encode("</think>"))
+\end{codebox}
+
+输出是单个词元 \texttt{[151667]} 和 \texttt{[151668]}，这表明 \texttt{\textless{}think\textgreater{}} 和 \texttt{\textless{}/think\textgreater{}} 词元现在已属于词表，不再被拆成子词词元。
+
+这些新词元也会得到基础模型的支持，该模型支持从 0 到 151935 的词元 ID，因为它的词表大小为 151936。我们可以通过打印嵌入层的大小来确认这一点：
+
+\begin{codebox}
+print("Vocabulary size:", model.tok_emb.weight.shape[0])
+\end{codebox}
+
+另一种做法是，不修改基础分词器，而是使用推理模型变体，它的分词器原生支持这些 \texttt{\textless{}think\textgreater{}} 词元。如同第 2 章那样，我们可以单独加载分词器。
+
+\begin{codeboxt}{代码清单 7.11 加载推理模型的分词器}
+from reasoning_from_scratch.qwen3 import Qwen3Tokenizer
+from reasoning_from_scratch.qwen3 import download_qwen3_small
+
+download_qwen3_small(
+    kind="reasoning", tokenizer_only=True, out_dir="qwen3"
+)
+
+tokenizer_path = Path("qwen3") / "tokenizer-reasoning.json"
+tokenizer = Qwen3Tokenizer(tokenizer_file_path=tokenizer_path)
+\end{codeboxt}
+
+现在，我们用推理分词器（\texttt{tokenizer}）而不是 \texttt{tokenizer\_base} 来编码这些词元 ID：
+
+\begin{codebox}
+print(tokenizer.encode("<think>"))
+print(tokenizer.encode("</think>"))
+\end{codebox}
+
+与使用 \texttt{tokenizer\_base} 时一样，这会返回 \texttt{[151667]} 和 \texttt{[151668]}。
+
+现在我们有了一个支持这些 \texttt{\textless{}think\textgreater{} \textless{}/think\textgreater{}} 词元的分词器，就可以开发一个奖励函数来检查 LLM 是否使用了它们，如果使用了就给出非零奖励，如图 7.18 所示。这意味着我们可以开发这样一个函数：如果 \texttt{\textless{}think\textgreater{}} 和 \texttt{\textless{}/think\textgreater{}} 都按正确顺序出现在输出中，就返回 1.0；否则返回 0.0。
+
+\begin{codeboxt}{代码清单 7.12 实现格式奖励函数}
+def reward_format(
+    token_ids,
+    prompt_len,
+    start_think_id=151667,
+    end_think_id=151668,
+):
+    try:
+        gen = token_ids[prompt_len:].tolist()
+        return float(
+            gen.index(start_think_id) < gen.index(end_think_id)
+        )
+    except ValueError:
+        return 0.0
+\end{codeboxt}
+
+\myGraphic{0.92}{images/CH07_F18_Raschka2.png}{图 7.18 使用之前的正确性奖励（左）以及正确性加格式奖励（右）}
+
+我们在一段简单文本上试一试：
+
+\begin{codebox}
+prompt = "Calculate ..."
+rollout = "Let's ... <think> ... </think> ..."
+token_ids = tokenizer.encode(prompt + rollout)
+reward_format(
+    token_ids=torch.tensor(token_ids),
+    prompt_len=len(tokenizer.encode(prompt))
+)
+\end{codebox}
+
+在前面的代码片段中运行 \texttt{reward\_format} 函数会如预期返回 1.0，因为答案（\texttt{rollout}）同时包含 \texttt{\textless{}think\textgreater{}} 和 \texttt{\textless{}/think\textgreater{}}。
+
+\begin{mySidebar}{练习 7.1：测试  格式奖励}
+
+运行该示例并确认它返回 1.0，因为 \texttt{\textless{}think\textgreater{}} 和 \texttt{\textless{}/think\textgreater{}} 都按正确顺序出现了。
+
+现在按以下几种方式修改 \texttt{rollout} 文本：
+
+\begin{itemize}
+\item 在 \texttt{\textless{}think\textgreater{}} \texttt{\textless{}/think\textgreater{}} 标签之一中引入一个拼写错误。
+\item 颠倒标签顺序。
+\item 删除一个标签。
+\end{itemize}
+
+验证每种情况下奖励都变为 0.0。
+
+\end{mySidebar}
+
+现在我们有了这个新的 \texttt{reward\_format} 函数，就可以把格式奖励作为额外信号来训练模型。例如，我们可以把第 6 章的 \texttt{compute\_grpo\_loss} 改造成 \texttt{compute\_grpo\_loss\_plus\_format\_reward} 函数，如下所示（改动在注释中高亮标出）。
+
+\begin{codeboxt}{代码清单 7.13 用格式奖励更新 GRPO 损失函数}
+def compute_grpo_loss_plus_format_reward(
+    # ...
+    format_reward_weight=1.0,  #1
+):
+    # ...
+
+        logp = sequence_logprob(model, token_ids, prompt_len)
+        rlvr_reward = reward_rlvr(text, example["answer"])
+
+        format_reward = reward_format(token_ids, prompt_len)         # 新增#2
+        reward = rlvr_reward + format_reward_weight * format_reward  # NEW #2
+
+    # ...
+\end{codeboxt}
+{\noindent\small\textit{\#1 一个设置参数，用于调节格式奖励相对于现有正确性奖励的量级 \newline \#2 新的格式奖励代码行，把原来的奖励改为由正确性奖励和格式奖励组成}\par}
+
+此外，我们还可以修改 \texttt{render\_prompt}，引导模型显式地输出这些 \texttt{\textless{}think\textgreater{}} 和 \texttt{\textless{}/think\textgreater{}} 词元。
+
+\begin{codeboxt}{代码清单 7.14 针对 \texttt{\textless{}think\textgreater{}} 词元更新后的提示渲染函数}
+def render_prompt_with_think_tokens(prompt):
+    template = (
+        "You are a helpful math assistant.\n"
+        "When solving the problem, first write your reasoning inside <think> and </think> tags.\n"
+        "Then write the final result on a new line in the exact format:\n"
+        "\\boxed{ANSWER}\n\n"
+        f"Question:\n{prompt}\n\nAnswer:"
+    )
+    return template
+\end{codeboxt}
+
+理论上，代码清单 7.11 到 7.14 中的修改已经足以在额外的格式奖励下训练一个推理模型。现在我们来看看实际效果如何，并讨论一些额外的注意事项。
+
+\subsection{训练模型输出 词元}
+
+使用格式奖励训练推理模型所需的修改已在一个脚本中实现，你可以下载它：
+
+\begin{codebox}
+download_from_github(
+    "ch07/03_rlvr_grpo_scripts_advanced/7_6_plus_format_reward.py"
+)
+\end{codebox}
+
+关于这个脚本，有几点需要注意。例如，如果我们用修改后的提示训练基础模型输出 \texttt{\textless{}think\textgreater{}} 和 \texttt{\textless{}/think\textgreater{}} 词元（如代码清单 7.14 所示），结果会很差，因为基础模型此前从未见过这些词元。引入这些新词元的正确做法，是在包含 \texttt{\textless{}think\textgreater{}} 和 \texttt{\textless{}/think\textgreater{}} 词元的数据上对模型进行预训练或指令微调（指令微调将在下一章介绍）。
+
+在本章中，我们聚焦于强化学习，因此会训练模型现有的推理变体，它已经熟悉 \texttt{\textless{}think\textgreater{}} 词元。这就是我们在第 3 章介绍过的同一个推理变体。
+
+你可以按如下方式运行该脚本：
+
+\begin{codebox}
+uv run 7_6_plus_format_reward.py \
+    --steps 500  \
+    --max_new_tokens 1024
+\end{codebox}
+
+注意，这个脚本已经配置为使用推理模型变体，而不是基础模型。
+
+你可以下载这次运行的日志文件做进一步分析，因为运行该实验可能很耗资源，成本也高：
+
+\begin{codebox}
+download_from_github(
+    "ch07/02_logs/7_6_plus_format_reward_metrics.csv"
+)
+plot_grpo_metrics(
+    "7_6_plus_format_reward_metrics.csv",
+    columns=["loss", "reward_avg", "avg_response_len", "eval_acc"]
+)
+\end{codebox}
+
+生成的图如图 7.19 所示。可以看到，模型的评估准确率起初提升，随后变差，而平均奖励大致保持不变。评估准确率的下降似乎与那之后模型产生的更短回复长度相关。
+
+\myGraphic{0.92}{images/CH07_F19_Raschka2.png}{图 7.19 使用格式奖励的一次 GRPO 训练运行中的基础指标}
+
+为了进一步探究，我们来看一些额外指标：
+
+\begin{codebox}
+plot_grpo_metrics(
+    "7_6_plus_format_reward_metrics.csv",
+    columns=["reward_avg", "format_reward_avg", "adv_std", "entropy_avg"],
+)
+\end{codebox}
+
+结果如图 7.20 所示。模型性能下降的一种可能解释是，模型仅仅因为遵循了 \texttt{\textless{}think\textgreater{}} 标签格式就获得过多奖励，正如 \texttt{format\_reward\_avg} 图所示。换句话说，模型没有足够专注于答案正确性（这体现在尽管 \texttt{reward\_avg} 很高，\texttt{eval\_acc }却下降了）。
+
+\myGraphic{0.92}{images/CH07_F20_Raschka2.png}{图 7.20 使用格式奖励的一次 GRPO 训练运行中的额外指标}
+
+解决这一问题的一种办法是降低格式奖励的强度，比如把默认的 \texttt{format\_reward\_weight} 从 \texttt{1.0} 降到 \texttt{0.1}。另一种办法是让格式奖励变成条件性的，即只有在答案也正确时才给予。在当前设置中，无论答案是否正确都会给予格式奖励。
+
+\begin{mySidebar}{关于 loss 和 kl\_loss 的说明}
+
+这个实验使用了 \texttt{7\_6\_plus\_format\_reward.py}，并采用默认设置 \texttt{--kl\_coeff 0.0} 和 \texttt{--inner\_epochs 1}。由于 \texttt{--kl\_coeff} 被设为 \texttt{0.0}，KL 惩罚被禁用，因此记录的 \texttt{kl\_loss} 在整个运行过程中都保持为 \texttt{0}。
+
+如果你想用与 7.5 节相同的设置启用 KL 正则化，请运行：
+
+\begin{codebox}
+uv run 7_6_plus_format_reward.py \
+    --steps 500 \
+    --max_new_tokens 1024 \
+    --kl_coeff 0.001 \
+    --inner_epochs 2
+\end{codebox}
+
+在默认的 7.6 设置下，记录的 \texttt{loss}（图 7.19）也是 0。这是因为该运行只使用一次内部更新（\texttt{--inner\_epochs 1}），并且把模型与同一步的自身副本进行比较。结果就是策略比率从 1 开始，又由于优势值被归一化为均值为 0，标量策略损失的计算结果为 0。
+
+所以在这种情况下，\texttt{loss = 0} 是由默认设置造成的计算产物。它主要反映的是该运行只使用一个内部轮次且没有 KL 项，这使得记录的标量损失不具信息量。
+
+这里更有用的监控量是 \texttt{reward\_avg}、\texttt{format\_reward\_avg}、\texttt{adv\_std} 和 \texttt{entropy\_avg} 等指标。
+
+\end{mySidebar}
+
+\begin{mySidebar}{练习 7.2：让格式奖励变成条件性的}
+
+修改格式奖励的计算，
+
+\begin{codebox}
+reward = rlvr_reward + format_reward_weight * format_reward
+\end{codebox}
+
+使得只有在正确性奖励（\texttt{rlvr\_reward}）非零时才给予格式奖励。用条件化格式奖励重复这次训练运行。把格式奖励条件化会改变训练行为和最终准确率吗？
+
+注意：由于运行这些实验可能很耗资源，参考结果提供在附录 B 中。
+
+\end{mySidebar}
+
+\subsection{更多 GRPO 修改、技巧与诀窍}
+
+在第 6 章中，出于入门讲解的目的，我们实现了 GRPO 的一个版本：没有 KL 损失项、带有裁剪策略比率，还带有格式奖励。随后我们把这些概念加入进来，为理解原始 GRPO 算法打下了坚实基础，它是大多数现代推理训练框架的基础。图 7.21 概述了下一步，我们将讨论更多修改、技巧与诀窍。
+
+\myGraphic{0.92}{images/CH07_F21_Raschka2.png}{图 7.21 本章最后一节概述了近期出现的更多 GRPO 修改。}
+
+就使用 GRPO 的 RLVR 而言，我们了解到有许多可以调节的旋钮。除了改变基础设置（如学习率、最大回复长度和提示格式）之外，还有几乎无穷无尽的设置和修改可以尝试。对单个修改、或少量几个修改进行深入研究，可能会成为一个小型研究团队长达数月甚至数年的研究项目。
+
+算法会不断变化和演进，这在意料之中。不过，重要的是理解其背后的基本原理和总体思想，这样你才能理解并欣赏这些改进。
+
+在 DeepSeek-R1 取得成功之后的几个月里，许多研究者提出了对原始 GRPO 算法的改动，这些改动同时提升了训练稳定性和最终性能。以下这些改进建议取自 DAPO、Dr. GRPO、DeepSeek-V3.2 等（完整的参考文献和链接见附录 A）：
+
+\begin{enumerate}
+\item 过滤掉零梯度样本（DAPO）：跳过所有采样回复获得相同奖励的提示，因为这类组产生的优势信号没有用处。
+\item 使用主动采样（DAPO）：对产生正确与错误回复混合的提示进行过采样或优先处理，因为它们提供更强的学习信号。
+\item 从序列级损失切换到词元级损失（DAPO）：在单个词元而非整条回复上计算损失，这可以减少与长度相关的偏差。
+\item 省略 KL 损失项（DAPO 和 Dr. GRPO）：当 KL 惩罚损害稳定性或性能时将其移除，尤其是在数学推理场景中。
+\item 使用更大的裁剪范围（DAPO）：放宽裁剪阈值，使策略在奖励信号可靠时能做出更大的更新。
+\item 截断重要性采样比率（verl）：对非常大的重要性权重设上限，使少数离策略样本无法主导更新。
+\item 移除优势值的标准差归一化（Dr. GRPO）：相对于组均值对奖励进行归一化，但不除以奖励的标准差。
+\item 按领域调节 KL 强度（DeepSeek-V3.2）：对不同数据类型使用不同的 KL 系数，包括对数学任务使用零 KL。
+\item 用重要性采样对 KL 项重新加权（DeepSeek-V3.2）：当采样轨迹是从较旧的策略而非当前策略采样得到时，校正 KL 估计。
+\item 掩码掉不合适的离策略序列（DeepSeek-V3.2）：排除在当前策略下过于不可能的采样轨迹序列。
+\item 保留 top-\emph{p} 或 top-\emph{k} 采样的采样掩码（DeepSeek-V3.2）：只在采样时实际可用的词元集合上计算概率。
+\item 保留原始 GRPO 的优势归一化（DeepSeek-V3.2）：当标准的基于组的优势归一化在实验中表现良好时，保留它。
+\item 在聚合之前对每个奖励分量分别归一化（GDPO）：先把不同类型的奖励分别归一化，再合并成总奖励。
+\item 应用序列级重要性采样和裁剪（GSPO）：在整条序列层面而非仅在词元层面校正和裁剪更新。
+\item 裁剪重要性采样权重而非词元更新（CISPO）：直接限制重要性权重，使离策略校正保持稳定。
+\end{enumerate}
+
+这些修改的详细解释、代码示例和训练运行结果超出本章范围。如果你感兴趣，可以在本书配套材料中找到它们：\href{https://mng.bz/nZVv.}{https://mng.bz/nZVv.}
+
+\section{小结}
+
+\begin{itemize}
+\item 使用 GRPO 训练推理模型时，较长的运行可能变得不稳定，即使实现是正确的、奖励一开始也在提升。
+\item 解读 GRPO 训练需要联合追踪多个指标（平均奖励、回复长度、评估准确率、优势统计量和熵）： 诸如损失之类的基础指标在 GRPO 中主要充当合理性检查，不应孤立地过度解读。 优势统计量提供了有用的诊断信息：按设计，均值应始终接近零，而标准差反映学习信号的强度与稳定性。 熵衡量模型在生成过程中的不确定程度。极低的熵可能预示崩塌，而过大的熵则可能表示更新不稳定、模型回复随机。
+\item 裁剪策略比率限制了策略在两次更新之间能改变多少，可以显著提升较长运行中的训练稳定性。
+\item 加入 KL 散度项可以约束相对参考模型的长期漂移，但当奖励崩塌时可能破坏训练稳定性。
+\item 对于数学推理任务，近期有若干系统报告称，完全省略 KL 项能获得更好的稳定性和性能。
+\item 辅助性的格式奖励可以改善回复结构，例如鼓励使用 \texttt{\textless{}think\textgreater{}} 和 \texttt{\textless{}/think\textgreater{}} 词元。
+\item 在原始 GRPO 算法之外，许多近期扩展会修改优势归一化、重要性采样、裁剪策略和 KL 处理方式，以提升稳定性和效率。
+\end{itemize}

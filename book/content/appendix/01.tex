@@ -1,0 +1,357 @@
+\section{第 1 章：理解推理模型}
+
+\subsection{参考文献}
+
+这是 OpenAI o1 模型的发布文章，该模型被视为首个基于 LLM 的推理模型：
+
+\begin{itemize}
+\item OpenAI, “Introducing OpenAI o1-preview” (Sept. 12, 2024), \href{https://openai.com/index/introducing-openai-o1-preview/}{https://openai.com/index/introducing-openai-o1-preview/}
+\end{itemize}
+
+DeepSeek-R1 是首个附带完整技术报告的开源推理模型，该报告表明推理能力源自带可验证奖励的强化学习（第 5 章会更详细地讨论这一主题）：
+
+\begin{itemize}
+\item DeepSeek-AI, Daya Guo, Dejian Yang, et al., “DeepSeek-R1: Incentivizing Reasoning Capability in LLMs via Reinforcement Learning” (Jan. 22, 2025), \href{https://arxiv.org/abs/2501.12948}{https://arxiv.org/abs/2501.12948}
+\end{itemize}
+
+这是 OpenAI CEO 对未来的模型的推理（“思维链”，chain-of-thought）能力的评论：“我们接下来将发布 GPT-4.5，也就是我们内部称为 Orion 的模型，作为我们最后一个非思维链模型。”
+
+\begin{itemize}
+\item Sam Altman, post on X (Feb. 12, 2025), \href{https://x.com/sama/status/1889755723078443244}{https://x.com/sama/status/1889755723078443244}
+\end{itemize}
+
+Apple 的 AI 研究人员发表的一篇研究论文发现，推理模型是精密（但能力很强）的模式匹配器：
+
+\begin{itemize}
+\item Parshin Shojaee, Iman Mirzadeh, Keivan Alizadeh, et al., “The Illusion of Thinking: Understanding the Strengths and Limitations of Reasoning Models via the Lens of Problem Complexity” (Jun. 2025), \href{https://machinelearning.apple.com/research/illusion-of-thinking}{https://machinelearning.apple.com/research/illusion-of-thinking}
+\end{itemize}
+
+下面这本书是逐步实现和训练大语言模型的深入指南：
+
+\begin{itemize}
+\item Sebastian Raschka, \emph{《从零构建大语言模型》}, (Manning, 2024), \href{http://mng.bz/orYv}{http://mng.bz/orYv}
+\end{itemize}
+
+\subsection{延伸阅读}
+
+下面这篇文章介绍了 DeepSeek-R1 的工作原理，有助于深入理解 LLM 中推理的基础：
+
+\begin{itemize}
+\item Sebastian Raschka, “Understanding Reasoning LLMs” (Feb. 5, 2025), \href{https://magazine.sebastianraschka.com/p/understanding-reasoning-llms}{https://magazine.sebastianraschka.com/p/understanding-reasoning-llms}
+\end{itemize}
+
+\section{第 2 章：用预训练的 LLM 生成文本}
+
+\subsection{参考文献}
+
+你可以在以下网址找到 \texttt{uv} 这个 Python 包与项目管理器的官方安装页面：
+
+\begin{itemize}
+\item “Installing uv,” \href{https://docs.astral.sh/uv/getting-started/installation/}{https://docs.astral.sh/uv/getting-started/installation/}
+\end{itemize}
+
+以下是两个对用户友好、广受欢迎且支持 GPU 的云计算平台：
+
+\begin{itemize}
+\item Lightning AI, \href{https://lightning.ai/}{https://lightning.ai/}
+\item Google Colab, \href{https://colab.research.google.com/}{https://colab.research.google.com/}
+\end{itemize}
+
+下面这些文章提供了 Qwen3 的相关资源，其中包含额外的基准测试结果以及与其他模型的对比：
+
+\begin{itemize}
+\item “Qwen3: Think Deeper, Act Faster” (Apr. 28, 2025), \href{https://qwen.ai/blog?id=qwen3}{https://qwen.ai/blog?id=qwen3}
+\item An Yang, Anfeng Li, Baosong Yang, et al., “Quen3 Technical report” (May 14, 2025), \href{https://arxiv.org/abs/2505.09388}{https://arxiv.org/abs/2505.09388}
+\end{itemize}
+
+如果想了解不同序列长度下的 KV 缓存（KV cache）大小，可以在这里找到一个方便的在线计算器：
+
+\begin{itemize}
+\item KV cache size calculator, \href{https://lmcache.ai/kv\_cache\_calculator.xhtml}{https://lmcache.ai/kv\_cache\_calculator.xhtml}
+\end{itemize}
+
+\subsection{A.2.2 延伸阅读}
+
+这是为 PyTorch 新手或需要复习的人准备的 PyTorch 教程：
+
+\begin{itemize}
+\item Sebastian Raschka, “PyTorch in One Hour: From Tensors to Training Neural Networks on Multiple GPUs tutorial” (July 1, 2025), \href{https://sebastianraschka.com/teaching/pytorch-1h}{https://sebastianraschka.com/teaching/pytorch-1h}
+\end{itemize}
+
+以下是关于分词（tokenization）的补充资源：
+
+\begin{itemize}
+\item Sebastian Raschka, \emph{《从零构建大语言模型》}, 第 2 章 (Manning, 2024), \href{https://mng.bz/M96o}{https://mng.bz/M96o}
+\item Sebastian Raschka, “Implementing A Byte Pair Encoding (BPE) Tokenizer From Scratch” (Jan. 17, 2025), \href{https://sebastianraschka.com/blog/2025/bpe-from-scratch.xhtml}{https://sebastianraschka.com/blog/2025/bpe-from-scratch.xhtml}
+\end{itemize}
+
+如果你想更深入地学习 PyTorch，我推荐下面两本书：
+
+\begin{itemize}
+\item Howard Huang, Eli Stevens, Luca Antiga, and Thomas Viehmann, \emph{Deep Learning with PyTorch} (Manning 2026), \href{https://www.manning.com/books/deep-learning-with-pytorch-second-edition}{https://www.manning.com/books/deep-learning-with-pytorch-second-edition}
+\item Sebastian Raschka, Yuxi (Hayden) Liu, and Vahid Mirjalili, \emph{Machine Learning with PyTorch and Scikit-Learn} (Packt Publishing, 2022), \href{https://www.amazon.com/Machine-Learning-PyTorch-Scikit-Learn-learning/dp/1801819319/}{https://www.amazon.com/Machine-Learning-PyTorch-Scikit-Learn-learning/dp/1801819319/}
+\end{itemize}
+
+\section{第 3 章：评估推理模型}
+
+\subsection{参考文献}
+
+MATH-500 数据集源自 MATH 数据集，后者在下面这篇论文中提出，包含 12,500 道题目，涵盖代数、几何、概率、数论等：
+
+\begin{itemize}
+\item Dan Hendrycks, Collin Burns, Saurav Kadavath, et al., “Measuring Mathematical Problem Solving With the MATH Dataset” (Mar. 5, 2021), \href{https://arxiv.org/abs/2103.03874}{https://arxiv.org/abs/2103.03874}
+\end{itemize}
+
+MATH-500 划分（由原始 MATH 数据集创建而来）出自下面这篇论文：
+
+\begin{itemize}
+\item Hunter Lightman, Vineet Kosaraju, Yura Burda, et al., “Let's Verify Step by Step” (31 May 2023), \href{https://arxiv.org/abs/2305.20050}{https://arxiv.org/abs/2305.20050}
+\end{itemize}
+
+\subsection{延伸阅读}
+
+如果你对 SymPy 感兴趣——它是一个用于数学和符号计算的 Python 库（本书并不要求使用）——可以在下面这个官方教程中了解更多：
+
+\begin{itemize}
+\item SymPy, “Introductory Tutorial,” \href{https://docs.sympy.org/latest/tutorials/intro-tutorial/index.xhtml}{https://docs.sympy.org/latest/tutorials/intro-tutorial/index.xhtml}
+\end{itemize}
+
+下面这篇文章给出了一个系统的示例（这里是一个经过微调的 LLM），该系统还会评估中间的推理步骤：
+
+\begin{itemize}
+\item Shijie Xia, Xuefeng Li, Yixin Liu, et al., “Evaluating Mathematical Reasoning Beyond Accuracy,” Proceedings of the 61st Annual Meeting of the Association for Computational Linguistics, Volume 1: Long Papers (2023), 6858–6877, \href{https://arxiv.org/pdf/2404.05692}{https://arxiv.org/pdf/2404.05692}
+\end{itemize}
+
+下面是一个大规模数据集，包含 800,000 条步骤级正确性标签，用于标注模型对 MATH 数据集中问题生成的解答：
+
+\begin{itemize}
+\item Hunter Lightman, Vineet Kosaraju, Yura Burda, et al., “Let's Verify Step by Step” (May 31, 2023), \href{https://arxiv.org/abs/2305.20050}{https://arxiv.org/abs/2305.20050}
+\end{itemize}
+
+一篇描述 LLM 评估成本不断上升的文章发现，在七个热门基准测试上评估 o1 这类推理模型大约要花费 1,500 美元：
+
+\begin{itemize}
+\item Kyle Wiggers, “The rise of AI ‘reasoning’ models is making benchmarking more expensive” (Apr. 10, 2025), \href{https://techcrunch.com/2025/04/10/the-rise-of-ai-reasoning-models-is-making-benchmarking-more-expensive/}{https://techcrunch.com/2025/04/10/the-rise-of-ai-reasoning-models-is-making-benchmarking-more-expensive/}
+\end{itemize}
+
+下面是 2025 年发布的一篇关于 LLM 基准测试的全面综述：
+
+\begin{itemize}
+\item Shiwen Ni, Guhong Chen, Shuaimin Li, et al., “A Survey on Large Language Model Benchmarks” (Aug. 21, 2025), \href{https://arxiv.org/abs/2508.15361}{https://arxiv.org/abs/2508.15361}
+\end{itemize}
+
+近期的一个研究项目表明，除了仅依赖确定性的符号验证器（verifier）之外，小型推理模型本身也可以成功地用作其他推理模型的验证器：
+
+\begin{itemize}
+\item Ding Chen, Qingchen Yu, Pengyuan Wang, et al., “xVerify: Efficient Answer Verifier for Reasoning Model Evaluations” (Apr. 14, 2025), \href{https://arxiv.org/abs/2504.10481}{https://arxiv.org/abs/2504.10481}
+\end{itemize}
+
+\section{第 4 章：用推理时扩展改进推理}
+
+\subsection{参考文献}
+
+下面这篇论文正式描述了思维链提示。需要注意的是，该论文建议将“Let's think step by step”作为对提示（prompt）的修改。在我的实验中，我发现使用 Qwen3 基础模型时，“Explain step by step”的效果更好，因此在第 4 章中我们采用了它：
+
+\begin{itemize}
+\item Takeshi Kojima, Shixiang Shane Gu, Machel Reid, et al., “Large Language Models are Zero-Shot Reasoners” (May 24, 2022), \href{https://arxiv.org/abs/2205.11916}{https://arxiv.org/abs/2205.11916}
+\end{itemize}
+
+下面这篇论文聚焦于自洽性（self-consistency）采样，并附有额外的对比研究：
+
+\begin{itemize}
+\item Xuezhi Wang, Jason Wei, Dale Schuurmans, et al., “Self-Consistency Improves Chain-of-Thought Reasoning in Language Models” (Mar. 21, 2022), \href{https://arxiv.org/abs/2203.11171}{https://arxiv.org/abs/2203.11171}
+\end{itemize}
+
+\subsection{延伸阅读}
+
+下面这篇文章概述并讨论了其他推理扩展方法：
+
+\begin{itemize}
+\item Sebastian Raschka, “The State of LLM Reasoning Model Inference” (Mar. 8, 2025), \href{https://magazine.sebastianraschka.com/p/state-of-llm-reasoning-and-inference-scaling}{https://magazine.sebastianraschka.com/p/state-of-llm-reasoning-and-inference-scaling}
+\end{itemize}
+
+\section{第 5 章：通过自我修正进行推理时扩展}
+
+\subsection{参考文献}
+
+Google 对其专有的 Gemini 3 模型背后的方法秘而不宣，但根据最近的一则公告，我们可以推测它使用了类似自洽性或 best-of-\emph{N} 的推理扩展技术：“我们通过 Gemini 3 Deep Think 进一步拓展智能的边界。该模式通过同时探索多个假设来解决问题，从而显著提升推理能力。”
+
+\begin{itemize}
+\item 负责开发 Gemini 的 Google DeepMind 在 X 上发布的公开公告（2025 年 12 月 4 日），https://x.com/GoogleDeepMind/status/1996658401233842624?s=20
+\end{itemize}
+
+DeepSeekMath-V2 论文表明，自洽性扩展能显著提升答案的准确率；将其自洽性与他们的自我修正版本（在下面这篇论文的图 2 中称为 \emph{Best@32}）相结合，该模型在多项数学竞赛中取得了金牌级的表现：
+
+\begin{itemize}
+\item Zhihong Shao, Yuxiang Luo, Chengda Lu, et al., “DeepSeekMath-V2: Towards Self-Verifiable Mathematical Reasoning” (Nov. 27, 2025), \href{https://arxiv.org/abs/2511.22570v1}{https://arxiv.org/abs/2511.22570v1}
+\end{itemize}
+
+在自洽性中，除了使用多数投票，我们还可以用打分函数对不同答案进行排序并选出最好的一个。这种方法称为 best-of-\emph{N}。不过，在适用的情况下，多数投票往往能给出更好的结果：
+
+\begin{itemize}
+\item Junlin Wang, Shang Zhu, Jon Saad-Falcon, et al., “Think Deep, Think Fast: Investigating Efficiency of Verifier-free Inference-time-scaling Methods” (Apr. 18, 2025), \href{https://arxiv.org/abs/2504.14047}{https://arxiv.org/abs/2504.14047}
+\end{itemize}
+
+\subsection{延伸阅读}
+
+下面这篇短文解释了概率（probability）与似然（likelihood）之间的区别：
+
+\begin{itemize}
+\item Sebastian Raschka, “What is the difference between likelihood and probability?” \href{https://sebastianraschka.com/faq/docs/probability-vs-likelihood.xhtml}{https://sebastianraschka.com/faq/docs/probability-vs-likelihood.xhtml}
+\end{itemize}
+
+\section{第 6 章：用强化学习训练推理模型}
+
+\subsection{参考文献}
+
+InstructGPT 论文证明了基于人类反馈的强化学习（RLHF）的有效性，并在将 RLHF 推广为 LLM 标准对齐与微调方法的过程中发挥了关键作用：
+
+\begin{itemize}
+\item Long Ouyang, Jeff Wu, Xu Jiang, et al., “Training language models to follow instructions with human feedback” (Mar. 4, 2022), \href{https://arxiv.org/abs/2203.02155}{https://arxiv.org/abs/2203.02155}
+\end{itemize}
+
+下面这篇 DeepSeekMath 论文提出了组相对策略优化（GRPO）算法：
+
+\begin{itemize}
+\item Zhihong Shao, Peiyi Wang, Qihao Zhu, et al., “DeepSeekMath: Pushing the Limits of Mathematical Reasoning in Open Language Models” (Feb. 5, 2024), \href{https://arxiv.org/abs/2402.03300}{https://arxiv.org/abs/2402.03300}
+\end{itemize}
+
+DeepSeek-R1 论文表明，仅通过强化学习（在 GRPO 下使用 RLVR）LLM 中就能涌现出强大的推理行为。这一点在 R1-Zero 变体中体现得最为明显，而将该方法与多阶段训练流程结合则能得到更好的推理模型：
+
+\begin{itemize}
+\item DeepSeek-AI, Daya Guo, Dejian Yang, et al., “DeepSeek-R1: Incentivizing Reasoning Capability in LLMs via Reinforcement Learning” (Jan. 22, 2025), \href{https://arxiv.org/abs/2501.12948}{https://arxiv.org/abs/2501.12948}
+\end{itemize}
+
+\subsection{延伸阅读}
+
+下面这篇文章全面讲解了涉及 RLVR 的 DeepSeek-R1 训练流程：
+
+\begin{itemize}
+\item Sebastian Raschka, “Understanding Reasoning LLMs: Methods and Strategies for Building and Refining Reasoning Models” (Feb. 5, 2025), \href{https://magazine.sebastianraschka.com/p/understanding-reasoning-llms}{https://magazine.sebastianraschka.com/p/understanding-reasoning-llms}
+\end{itemize}
+
+这篇文章在 LLM 的场景下比较了用于强化学习的 GRPO 和 PPO：
+
+\begin{itemize}
+\item Sebastian Raschka, “The State of Reinforcement Learning for LLM Reasoning: Understanding GRPO and New Insights from Reasoning Model Papers” (Apr. 19, 2025), \href{https://magazine.sebastianraschka.com/p/the-state-of-llm-reasoning-model-training}{https://magazine.sebastianraschka.com/p/the-state-of-llm-reasoning-model-training}
+\end{itemize}
+
+\section{第 7 章：改进用于强化学习的 GRPO}
+
+\subsection{参考文献}
+
+这是最初的 PPO 论文，提出了截断的策略比率，我们在这里也用它来稳定 GRPO：
+
+\begin{itemize}
+\item John Schulman, Filip Wolski, Prafulla Dhariwal, et al., “Proximal Policy Optimization Algorithms” (Jul. 20, 2017), \href{https://arxiv.org/abs/1707.06347}{https://arxiv.org/abs/1707.06347}
+\end{itemize}
+
+下面这些论文提出了对 GRPO 算法的改进建议：
+
+\begin{itemize}
+\item Qiying Yu, Zheng Zhang, Ruofei Zhu, et al., “DAPO: An Open-Source LLM Reinforcement Learning System at Scale” (Mar. 18, 2025), \href{https://arxiv.org/abs/2503.14476}{https://arxiv.org/abs/2503.14476}
+\item Understanding R1-Zero-Like Training: A Critical Perspective”（2025 年 3 月 26 日，该论文提出了 Dr. GRPO），\href{https://arxiv.org/abs/2503.20783}{https://arxiv.org/abs/2503.20783}
+\item Feng Yao, Liyuan Liu, Dinghuai Zhang, et al., “Your Efficient RL Framework Secretly Brings You Off-Policy RL Training”（2025 年 8 月 5 日，该论文提出了 VERL），\href{https://fengyao.notion.site/off-policy-rl}{https://fengyao.notion.site/off-policy-rl}
+\item DeepSeek-AI, Aixin Liu, Aoxue Mei, et al., “DeepSeek-V3.2: Pushing the Frontier of Open Large Language Models” (Dec. 2, 2025), \href{https://arxiv.org/abs/2512.02556}{https://arxiv.org/abs/2512.02556}
+\item Shih-Yang Liu, Xin Dong, Ximing Lu, et al., “GDPO: Group reward-Decoupled Normalization Policy Optimization for Multi-reward RL Optimization” (Jan. 8, 2026), \href{https://arxiv.org/abs/2601.05242}{https://arxiv.org/abs/2601.05242}
+\item Chujie Zheng, Shixuan Liu, Mingze Li, et al., “Group Sequence Policy Optimization”（2025 年 7 月 24 日，该论文提出了 GSPO），\href{https://arxiv.org/abs/2507.18071}{https://arxiv.org/abs/2507.18071}
+\item Aili Chen, Aonian Li, Bangwei Gong, et al., “MiniMax-M1: Scaling Test-Time Compute Efficiently with Lightning Attention”（2025 年 6 月 16 日，该论文提出了 CISPO），\href{https://arxiv.org/abs/2506.13585}{https://arxiv.org/abs/2506.13585}
+\end{itemize}
+
+\subsection{延伸阅读}
+
+下面这篇文章比较了 PPO（最初用于 RLHF 的算法）与 GRPO：
+
+\begin{itemize}
+\item Sebastian Raschka, “The State of Reinforcement Learning for LLM Reasoning” (Apr. 19, 2025), \href{https://magazine.sebastianraschka.com/p/the-state-of-llm-reasoning-model-training}{https://magazine.sebastianraschka.com/p/the-state-of-llm-reasoning-model-training}
+\end{itemize}
+
+下面这篇文章是一篇不错的技术深入剖析，讨论了各种 GRPO 改进：
+
+\begin{itemize}
+\item Cameron R. Wolfe, “GRPO++: Tricks for Making RL Actually Work” (Jan. 5, 2026), \href{https://cameronrwolfe.substack.com/p/grpo-tricks}{https://cameronrwolfe.substack.com/p/grpo-tricks}
+\end{itemize}
+
+\section{第 8 章：蒸馏推理模型以实现高效推理}
+
+\subsection{参考文献}
+
+这是最初的知识蒸馏论文，它让硬蒸馏与软蒸馏目标的结合得到了广泛采用：
+
+\begin{itemize}
+\item Geoffrey Hinton, Oriol Vinyals, and Jeff Dean, “Distilling the Knowledge in a Neural Network” (Mar. 9, 2015), \href{https://arxiv.org/abs/1503.02531}{https://arxiv.org/abs/1503.02531}
+\end{itemize}
+
+DeepSeek-R1 论文描述了本章所依据的推理蒸馏方案：由大型教师模型生成推理轨迹，再用这些轨迹训练较小的学生模型：
+
+\begin{itemize}
+\item DeepSeek-AI, Daya Guo, Dejian Yang, et al., “DeepSeek-R1: Incentivizing Reasoning Capability in LLMs via Reinforcement Learning” (Jan. 22, 2025), \href{https://arxiv.org/abs/2501.12948}{https://arxiv.org/abs/2501.12948}
+\end{itemize}
+
+下面这篇关于蒸馏大语言模型的论文报告了精心设计的软蒸馏目标所取得的优异结果：
+
+\begin{itemize}
+\item Yuxian Gu, Li Dong, Furu Wei, and Minlie Huang, “MiniLLM: Knowledge Distillation of Large Language Models” (Jun. 14, 2023), \href{https://arxiv.org/abs/2306.08543}{https://arxiv.org/abs/2306.08543}
+\end{itemize}
+
+\subsection{延伸阅读}
+
+下面这一章更详细地介绍了监督微调（硬蒸馏所用的技术），以及处理批量训练样本时的掩码：
+
+\begin{itemize}
+\item Sebastian Raschka, \emph{《从零构建大语言模型》}, 第 7 章 (Manning, 2024), \href{https://www.manning.com/books/build-a-large-language-model-from-scratch}{https://www.manning.com/books/build-a-large-language-model-from-scratch}
+\end{itemize}
+
+下面这篇文章实践性地讲解了推理模型训练流程，包括蒸馏和 RLVR：
+
+\begin{itemize}
+\item Sebastian Raschka, “Understanding Reasoning LLMs: Methods and Strategies for Building and Refining Reasoning Models” (Feb. 5, 2025), \href{https://magazine.sebastianraschka.com/p/understanding-reasoning-llms}{https://magazine.sebastianraschka.com/p/understanding-reasoning-llms}
+\end{itemize}
+
+\section{附录 F：LLM 评估的常见方法}
+
+\subsection{参考文献}
+
+这是最初提出广受欢迎的多选题 MMLU 数据集的论文：
+
+\begin{itemize}
+\item Dan Hendrycks, Collin Burns, Steven Basart, et al., “Measuring Massive Multitask Language Understanding” (Sept. 7, 2020), \href{https://arxiv.org/abs/2009.03300}{https://arxiv.org/abs/2009.03300}
+\end{itemize}
+
+下面这篇维基百科条目详细介绍了 Elo 等级分系统：
+
+\begin{itemize}
+\item Elo rating system, \href{https://en.wikipedia.org/wiki/Elo\_rating\_system}{https://en.wikipedia.org/wiki/Elo\_rating\_system}
+\end{itemize}
+
+下面这篇论文介绍了广受欢迎的 LLM 排行榜背后的原始方法：
+
+\begin{itemize}
+\item Wei-Lin Chiang, Lianmin Zheng, Ying Sheng, et al., “Chatbot Arena: An Open Platform for Evaluating LLMs by Human Preference” (Mar. 7, 2024), \href{https://arxiv.org/abs/2403.04132}{https://arxiv.org/abs/2403.04132}
+\end{itemize}
+
+\subsection{延伸阅读}
+
+下面这篇论文讨论了 LM Arena 等排行榜存在的问题：
+
+\begin{itemize}
+\item Shivalika Singh, Yiyang Nan, Alex Wang, et al., “The Leaderboard Illusion” (Apr. 29, 2025), \href{http://arxiv.org/abs/2504.20879}{http://arxiv.org/abs/2504.20879}
+\end{itemize}
+
+下面这篇文章更详细地介绍了 OpenAI 最新的开源模型 gpt-oss：
+
+\begin{itemize}
+\item Sebastian Raschka, “From GPT-2 to gpt-oss: Analyzing the Architectural Advances” (Aug. 9, 2025), \href{https://magazine.sebastianraschka.com/p/from-gpt-2-to-gpt-oss-analyzing-the}{https://magazine.sebastianraschka.com/p/from-gpt-2-to-gpt-oss-analyzing-the}
+\end{itemize}
+
+下面这篇综述比较了各种 LLM 评判（judge）方法：
+
+\begin{itemize}
+\item Jiawei Gu, Xuhui Jiang, Zhichao Shi, et al., “A Survey on LLM-as-a-Judge” (Nov. 23, 2024), \href{https://arxiv.org/abs/2411.15594}{https://arxiv.org/abs/2411.15594}
+\end{itemize}
+
+下面这篇论文所描述的方法，是一个经过微调、充当评判者的小型 LLM 的示例：
+
+\begin{itemize}
+\item Mahesh Deshwal and Apoorva Chawla, “PHUDGE: Phi-3 as Scalable Judge” (May 12, 2024), \href{https://arxiv.org/abs/2405.08029}{https://arxiv.org/abs/2405.08029}
+\end{itemize}

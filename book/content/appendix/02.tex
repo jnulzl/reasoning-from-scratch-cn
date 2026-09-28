@@ -1,0 +1,1010 @@
+习题解答的完整代码示例可以在配套的 GitHub 仓库中找到，地址为 \href{https://github.com/rasbt/reasoning-from-scratch}{https://github.com/rasbt/reasoning-from-scratch}。
+
+\section{第 2 章}
+
+\subsubsection*{习题 2.1：编码未知词}
+
+我们可以使用一个类似于“Hello, Ardwarklethyrx. Haus und Garten.”的提示（prompt），其中包含一个自造词（\texttt{"}\texttt{Ardwarklethyrx}\texttt{"}）以及三个非英语（德语）单词：
+
+\begin{codebox}
+prompt = "Hello, Ardwarklethyrx. Haus und Garten."
+input_token_ids_list = tokenizer.encode(prompt)
+for i in input_token_ids_list:
+    print(f"{[i]} --> {tokenizer.decode([i])}")
+\end{codebox}
+
+输出如下：
+
+\begin{codebox}
+[9707] --> Hello
+[11] --> ,
+[1644] -->  Ar
+[29406] --> dw
+[838] --> ark
+[273] --> le
+[339] --> th
+[10920] --> yr
+[87] --> x
+[13] --> .
+[47375] -->  Haus
+[2030] -->  und
+[93912] -->  Garten
+[13] --> .
+\end{codebox}
+
+如你所见，未知词会被拆分成更小的子词，甚至单个词元（token）；这样分词器和 LLM 就能处理任意输入。
+
+在这里，德语单词并没有被拆分成字符甚至子词，说明分词器在训练时见过德语文本。这也表明该 LLM 很可能也使用德语文本训练过，因此至少应能较好地处理某些非英语语言。
+
+\subsubsection*{习题 2.2：在非 CPU 设备上重新运行代码}
+
+我们只需删除代码清单 2.1 中的那一行 \texttt{device = torch.device(}\texttt{"}\texttt{cpu}\texttt{"}\texttt{)}，然后原样重新运行第 2 章的其余代码即可。我运行这些代码所用硬件的参考编号见第 2 章末尾的表 2.1。
+
+\section{第 3 章}
+
+\subsubsection*{习题 3.1：添加更多测试用例}
+
+可以添加的测试用例多到数不胜数。下面挑选了一些有趣的例子：
+
+\begin{codebox}
+from reasoning_from_scratch.ch03 import (
+    run_demos_table
+)
+
+more_tests = [
+    ("check_17", "[1, 2]", "(1, 2)", True),  #1
+    ("check_18", "1e-3", "0.001", True),  #2
+    ("check_19", "(-3)^2", "9", True),  #3
+    ("check_20", "−1", "-1", True),  #4
+
+]
+run_demos_table(more_tests)
+\end{codebox}
+{\noindent\small\textit{\#1 不同的括号类型 \newline \#2 科学计数法 \newline \#3 带脱字符指数的代数化简 \newline \#4 Unicode 减号（U+2212）对比 ASCII 连字符-减号}\par}
+
+输出如下：
+
+\begin{codebox}
+Test     | Expect | Got   | Status
+check_17 | True   | True  | PASS
+check_18 | True   | True  | PASS
+check_19 | True   | True  | PASS
+check_20 | True   | False | FAIL
+\end{codebox}
+
+如你所见，除了 \texttt{check\_20} 之外，所有测试都通过了。\texttt{check\_20} 把常规的减号换成了 Unicode 版本的减号，两者在人眼看来几乎无法区分（取决于你所使用的字体或编辑器）。我们可以在 \texttt{normalize\_text} 函数的任意位置添加下面两行之一来修复这个测试用例：
+
+\begin{codebox}
+text = text.replace("-", "-")
+\end{codebox}
+
+或
+
+\begin{codebox}
+text = text.replace("\u2212", "-")
+\end{codebox}
+
+下面是另一个有趣的测试：
+
+\begin{codebox}
+extra_tests_1 = [
+    ("check_21", "Text around answer 3.", "3", True)
+]
+\end{codebox}
+
+可以用以下代码运行它：
+
+\begin{codebox}
+run_demos_table(extra_tests_1)
+\end{codebox}
+
+但它没有通过测试：
+
+\begin{codebox}
+Test     | Expect | Got   | Status
+check_21 | True   | False | FAIL
+
+Passed 0/1
+\end{codebox}
+
+虽然看起来代码无法处理包含文本的情况，但这其实是一个设计不当的测试。实际上，\texttt{run\_demos\_table} 函数专门用于测试 \texttt{grade\_answer} 函数，仅此而已。
+
+\texttt{grade\_answer} 函数永远不会以这种文本形式接收到完整的答案，因为答案在被传入之前就已经从文本中提取出来了。如果要测试文本形式的答案，需要按如下方式调用测试：
+
+\begin{codebox}
+from reasoning_from_scratch.ch03 import (
+    extract_final_candidate
+)
+extra_tests_2 = [
+    ("check_21",
+     extract_final_candidate("Text around answer 3."),
+     "3", True)
+]
+run_demos_table(extra_tests_2)
+\end{codebox}
+
+从输出可以看到，它现在通过了测试：
+
+\begin{codebox}
+Test     | Expect | Got  | Status
+check_21 | True   | True | PASS
+
+Passed 1/1
+\end{codebox}
+
+\subsubsection*{习题 3.2：计算平均回复长度}
+
+\begin{codebox}
+# ...
+# below `num_correct = 0`
+total_len = 0
+
+# ...
+# inside for i, row in enumerate(math_data, start=1):
+# anywhere below `gen_text = ...`
+total_len += len(tokenizer.encode(gen_text))
+
+# ...
+# anywhere at the bottom before the return statement
+avg_len = total_len / num_examples
+print(f"Average length: {avg_len:.2f} tokens")
+\end{codebox}
+
+另一种方案（即第二种选择）是从我们在主章节中运行 \texttt{evaluate\_math500\_stream} 函数时创建的 \texttt{.jsonl} 文件中计算回复长度。这样可以避免重新运行评估。
+
+首先，我们按如下方式加载 \texttt{.jsonl} 文件：
+
+\begin{codebox}
+import json
+from pathlib import Path
+
+WHICH_MODEL = "base"
+dev_name = "mps"
+
+local_path = Path(f"math500-{dev_name}.jsonl")  #1
+if not local_path.exists():
+    raise FileNotFoundError(
+        f"{local_path} not found. Run ch03_main.ipynb to create it."
+    )
+
+results = []
+with open(local_path, "r") as f:
+    for line in f:
+        if line.strip():
+            results.append(json.loads(line))
+
+print("Number of entries:", len(results))
+\end{codebox}
+{\noindent\small\textit{\#1 你可能需要调整此路径。}\par}
+
+让我们打印字典的键，以便更好地了解 \texttt{results} 数据集的结构：
+
+\begin{codebox}
+print(results[0].keys())
+\end{codebox}
+
+输出如下：
+
+\begin{codebox}
+dict_keys(['index', 'problem', 'gtruth_answer', 'generated_text',
+'extracted', 'correct'])
+\end{codebox}
+
+每个条目都有多个键，但我们只关心 \texttt{generated\_text} 键，它包含了模型的完整答案。
+
+接下来，我们需要加载分词器，以便在计算词元数量之前对答案文本进行分词。这类似于代码清单 3.1 中使用的代码：
+
+\begin{codebox}
+from reasoning_from_scratch.qwen3 import (
+    download_qwen3_small,
+    Qwen3Tokenizer
+)
+
+if WHICH_MODEL == "base":
+
+    download_qwen3_small(
+        kind="base", tokenizer_only=True, out_dir="qwen3"
+    )
+    tokenizer_path = Path("qwen3") / "tokenizer-base.json"
+    tokenizer = Qwen3Tokenizer(tokenizer_file_path=tokenizer_path)
+
+elif WHICH_MODEL == "reasoning":
+
+    download_qwen3_small(
+        kind="reasoning", tokenizer_only=True, out_dir="qwen3"
+    )
+    tokenizer_path = Path("qwen3") / "tokenizer-reasoning.json"
+    tokenizer = Qwen3Tokenizer(
+        tokenizer_file_path=tokenizer_path,
+        apply_chat_template=True,
+        add_generation_prompt=True,
+        add_thinking=True,
+    )
+\end{codebox}
+
+现在，我们可以按如下方式计算平均长度，这类似于我们对 \texttt{evaluate\_math500\_stream} 函数所做的修改：
+
+\begin{codebox}
+total_len = 0
+
+for item in results:
+    num_tokens = len(tokenizer.encode(item["generated_text"]))
+    total_len += num_tokens
+
+avg_len = total_len / len(results)
+print(f"Average length: {avg_len:.2f} tokens")
+\end{codebox}
+
+得到的平均长度如下：
+
+\begin{codebox}
+Average length: 98.00 tokens
+\end{codebox}
+
+表 B.1 列出了不同模型和子集的平均长度。
+
+\begin{table}[htbp]
+\centering\small
+\centering
+\caption{表 B.1 MATH-500 上的平均词元数量}
+\begin{tabularx}{\linewidth}{XXXX}
+\toprule
+模型 & 设备 & 平均长度 & MATH-500 规模 \\
+基础 & CPU & 97.30 & 10 \\
+基础 & CUDA & 96.74 & 500 \\
+推理 & CPU & 891.80 & 10 \\
+推理 & CUDA & 1361.21 & 500 \\ \bottomrule
+\end{tabularx}
+\end{table}
+
+从表 B.1 的结果可以看到，正如预期的那样，推理模型生成的回复要长得多（在本例中大约长 10 倍）。
+
+\subsubsection*{习题 3.3：扩展或更改评估数据集}
+
+要在更大的数据集上评估模型，只需在下面的函数调用中把 \texttt{math\_data[:10]} 改为不同的切片或更大的数字（最多 500）：
+
+\begin{codebox}
+num_correct, num_examples, acc = evaluate_math500_stream(
+    model, tokenizer, device,
+    math_data=math_data[:10],
+    max_new_tokens=2048,
+    verbose=False
+)
+\end{codebox}
+
+表 B.2 显示了不同数据集规模下的准确率。（由于 MATH-500 测试集已经打乱过，因此没有再额外进行打乱。）如你所见，前 10 个示例并不能很好地代表模型在完整的 500 个示例上的 MATH-500 表现。
+
+\begin{table}[htbp]
+\centering\small
+\centering
+\caption{表 B.2 不同 MATH-500 数据集规模下的准确率}
+\begin{tabularx}{\linewidth}{XXXX}
+\toprule
+模型 & 设备 & 准确率 & MATH-500 规模 \\
+基础 & CUDA & 30.0\% & 10 \\
+基础 & CUDA & 34.0\% & 50 \\
+基础 & CUDA & 27.0\% & 100 \\
+基础 & CUDA & 15.3\% & 500 \\
+推理 & CUDA & 90.0\% & 10 \\
+推理 & CUDA & 58.0\% & 50 \\
+推理 & CUDA & 56.0\% & 100 \\
+推理 & CUDA & 48.2\% & 500 \\ \bottomrule
+\end{tabularx}
+\end{table}
+
+我们还可以创建一份风格与 MATH-500 类似的全新数据集。例如，本书的仓库中提供了一份 MATH-500 风格的数据集；在章节代码中把文件名从 \texttt{math500\_test.json} 改为 \texttt{math\_new50\_exercise.json} 即可使用它（该数据集包含在本书的 GitHub 仓库中，地址为 \href{https://github.com/rasbt/reasoning-from-scratch/tree/main/ch03/01\_main-chapter-code}{https://github.com/rasbt/reasoning-from-scratch/tree/main/ch03/01\_main-chapter-code}）。
+
+模型的表现如下：
+
+\begin{itemize}
+\item 基础：36.0\%（18/50）
+\item 推理：80.0\%（40/50）
+\end{itemize}
+
+在这个新的 50 示例数据集上，基础模型达到 36.0\% 的准确率，接近其在表 B.2 所示的 50 示例 MATH-500 子集上的 34.0\%。推理模型在新数据集上达到 80.0\% 的准确率，高于其在同一 MATH-500 子集上的 58.0\%。这表明推理模型的强劲表现并不局限于原始的 MATH-500 示例。虽然无法排除与 Qwen3 训练数据存在重叠的可能，但这些结果并未显示出对 MATH-500 大规模过拟合的迹象。
+
+\subsubsection*{习题 3.4：尝试不同的提示模板}
+
+我们可以使用另一种提示，类似于本章中建议的那种，即用“problem”一词替代“question”：
+
+\begin{codebox}
+def render_prompt(prompt):
+    template = (
+        "You are a helpful math assistant.\n"
+        "Solve the problem and write the final "
+        "result on a new line as:\n"
+        "\\boxed{ANSWER}\n\n"
+        f"Problem:\n{prompt}\n\nAnswer:"
+    )
+    return template
+\end{codebox}
+
+在 500 个示例上，使用该提示把基础模型的表现从 15.3\% 提升到 31.2\%，同时也把推理模型的表现从 48.2\% 提升到 50.0\%。
+
+从这些观察结果可以推断，基础模型对提示格式的敏感程度远高于推理模型（很可能是由于它在训练集中记住了一些按该提示格式排版的 MATH-500 示例）。后者似乎基本不受影响。
+
+\section{第 4 章}
+
+\subsubsection*{习题 4.1：在 MATH-500 上使用思维链（chain-of-thought, CoT）提示}
+
+修改只需在应用提示模板之后添加一个提示后缀，例如 \texttt{"}\texttt{\textbackslash\{\}n\textbackslash\{\}nExplain} \texttt{step} \texttt{by step.}\texttt{"}。第 3 章的 MATH-500 评估函数中只需更新很小一部分代码，如下所示：
+
+\begin{codebox}
+def evaluate_math500_stream(...):
+    # ...
+        for i, row in enumerate(math_data, start=1):
+            prompt = render_prompt(row["problem"])
+            prompt += "\n\nExplain step by step."  # 新增
+            gen_text = generate_text_stream_concat(
+                model, tokenizer, prompt, device,
+                max_new_tokens=max_new_tokens,
+                verbose=verbose,
+            )
+
+     # ...
+\end{codebox}
+
+改进效果见表 4.1 的第 3 行。
+
+\subsubsection*{习题 4.2：在 MATH-500 上使用温度缩放和 top-p 过滤}
+
+在这里，我们把 \texttt{generate\_text\_stream\_concat} 函数替换为 \texttt{generate\_text\_stream\_concat\_flex}，并传入 \texttt{generate\_text\_top\_p\_stream\_cache} 作为其生成函数。下面给出更新后的第 3 章 MATH-500 评估函数，改动处用标有 \# NEW 的注释标出：
+
+\begin{codebox}
+def evaluate_math500_stream(
+    model,
+    tokenizer,
+    device,
+    math_data,
+    out_path=None,
+    max_new_tokens=512,
+    verbose=False,
+    temperature=1.0,  # 新增
+    top_p=1.0,        # 新增
+):
+
+    # ...
+
+    with open(out_path, "w", encoding="utf-8") as f:
+        for i, row in enumerate(math_data, start=1):
+            prompt = render_prompt(row["problem"])
+            gen_text = generate_text_stream_concat_flex( # 新增
+                model, tokenizer, prompt, device,
+                max_new_tokens=max_new_tokens,
+                verbose=verbose,
+                generate_func=generate_text_top_p_stream_cache,  # 新增
+                temperature=temperature,                         # 新增
+                top_p=top_p                                      # 新增
+            )
+    # ...
+\end{codebox}
+
+这个修改后的函数与第 3 章基线之间的差异见表 4.1 的第 1 行和第 4 行。
+
+\subsubsection*{习题 4.3：在 MATH-500 上使用自洽性（self-consistency）采样}
+
+从代码清单 3.15 中的 \texttt{evaluate\_math500\_stream} 函数出发，第一处修改是把 \texttt{gen\_text = generate\_text\_stream\_concat(...)} 这一行替换为对 4.6 节中 \texttt{results = self\_consistency\_vote(...)} 的调用。
+
+第二处修改添加了一条简单的平局打破规则，即选择出现频率最高的答案中最先出现的那个。例如，如果采样结果为 1、3、5、3、5，函数会返回 3，因为它是出现次数最多的那一组中最早的成员。
+
+由于出现频率最高的答案存储在 \texttt{results[}\texttt{"}\texttt{majority\_winners}\texttt{"}\texttt{]} 中，打破平局的一种直接方式就是取该列表的第一个元素，即 \texttt{results[}\texttt{"}\texttt{majority\_winners}\texttt{"}\texttt{][0]}。
+
+这些改动在以下代码片段中展示：
+
+\begin{codebox}
+def evaluate_math500_stream(
+    model,
+    tokenizer,
+    device,
+    math_data,
+    out_path=None,
+    max_new_tokens=2048,
+    verbose=False,
+    prompt_suffix="",    # 新增
+    temperature=1.0,     # 新增
+    top_p=1.0,           # 新增
+    seed=None,           # 新增
+    num_samples=10,      # 新增
+):
+
+    if out_path is None:
+        dev_name = str(device).replace(":", "-")
+        out_path = Path(f"math500-{dev_name}.jsonl")
+
+    num_examples = len(math_data)
+    num_correct = 0
+    start_time = time.time()
+
+    with open(out_path, "w", encoding="utf-8") as f:
+        for i, row in enumerate(math_data, start=1):
+            prompt = render_prompt(row["problem"])
+
+            ##############################################################
+            # NEW
+            prompt += prompt_suffix
+            results = self_consistency_vote(
+                model=model,
+                tokenizer=tokenizer,
+                prompt=prompt,
+                device=device,
+                num_samples=num_samples,
+                temperature=temperature,
+                top_p=top_p,
+                max_new_tokens=max_new_tokens,
+                show_progress=False,
+                show_long_answer=False,
+                seed=seed,
+            )
+
+            # 处理并列情况
+            if results["final_answer"] is None:
+                extracted = results["majority_winners"][0]
+            else:
+                extracted = results["final_answer"]
+
+            # extracted = extract_final_candidate(
+            #     gen_text
+            # )
+
+            # Optionally, get long answer
+            if extracted is not None:
+                for idx, s in enumerate(results["short_answers"]):
+                    if s == extracted:
+                        long_answer = results["full_answers"][idx]
+                        break
+            gen_text = long_answer
+            ##############################################################
+
+            is_correct = grade_answer(
+                extracted, row["answer"]
+            )
+            num_correct += int(is_correct)
+    # ...
+\end{codebox}
+
+自洽性采样带来的性能提升总结并讨论于表 4.1（第 5–7 行和第 9–12 行）。
+
+\subsubsection*{习题 4.4：自洽性采样中的早停}
+
+早停检查可以通过添加几行代码来实现，用于判断给定答案是否已经被计数多次，更具体地说，就是判断该答案的计数是否大于 \texttt{num\_samples / 2}：
+
+\begin{codebox}
+if early_stop and counts[short] > num_samples / 2:
+    majority_winners = [short]
+    final_answer = short
+    break
+\end{codebox}
+
+下面这段修改后的 \texttt{self\_consistency\_vote} 函数片段展示了插入该代码的位置：
+
+\begin{codebox}
+def self_consistency_vote(
+    # ...
+    early_stop=True,   # 新增
+):
+    # ...
+
+        if show_progress:
+            print(f"[Sample {i+1}/{num_samples}] → {short!r}")
+
+        #########################################################
+        # NEW
+        # Early stop if one answer already meets >= 50% majority
+        if early_stop and counts[short] > num_samples / 2:
+            majority_winners = [short]
+            final_answer = short
+            break
+        #########################################################
+
+    if final_answer is None:
+        mc = counts.most_common()
+        if mc:
+            top_freq = mc[0][1]
+            majority_winners = [s for s, f in mc if f == top_freq]
+            final_answer = mc[0][0] if len(majority_winners) == 1 else None
+
+    return {
+        "full_answers": full_answers,
+        "short_answers": short_answers,
+        "counts": dict(counts),
+        "groups": groups,
+        "majority_winners": majority_winners,
+        "final_answer": final_answer,
+    }
+\end{codebox}
+
+\section{第 5 章}
+
+\subsubsection*{习题 5.1：在自洽性中使用启发式评分器（heuristic scorer）作为平局打破规则}
+
+实现方式有很多。最简单的方法或许是在自洽性函数之外处理，直接操作返回的字典，类似于我们在习题 4.4 中的做法——当时我们把平局打破逻辑直接实现在 \texttt{evaluate\_math500\_stream} 函数内部。相关代码行如下所示：
+
+\begin{codebox}
+# ...
+from reasoning_from_scratch.ch05 import heuristic_score
+
+def evaluate_math500_stream(
+    #...
+    # ...
+            results = self_consistency_vote(...)
+            # 已有多数投票胜出者
+            if results["final_answer"] is not None:
+                extracted = results["final_answer"]
+
+            ### 新增：使用 heuristic_score 打破平局
+            else:
+                best = None
+                best_score = float("-inf")
+                for cand in results["majority_winners"]:
+                    scores = [
+                        heuristic_score(results["full_answers"][idx],
+                                        prompt=prompt)
+                        for idx in results["groups"][cand]
+                    ]
+                    score = max(scores)
+                    if score > best_score:
+                        best_score = score
+                        best = cand
+                extracted = best
+            # ...
+    # ...
+    return num_correct, num_examples, acc
+\end{codebox}
+
+结果见表 B.3。准确率和运行时间是在 MATH-500 测试集的全部 500 个样本上、使用 \texttt{"}\texttt{cuda}\texttt{"} GPU（DGX Spark）计算得到的。
+
+\begin{table}[htbp]
+\centering\small
+\centering
+\caption{表 B.3 使用不同平局打破方式的 MATH-500 自洽性得分}
+\begin{tabularx}{\linewidth}{@{}c@{}XXXX}
+\toprule
+ & 方法 & 模型 & 准确率 & 时间 \\
+1 & 使用思维链提示的基线 & 基础 & 33.4\% & 129.2 min \\
+2 & 自洽性（\emph{n}=3） & 基础 & 43.2\% & 328.2 min \\
+3 & 自洽性（\emph{n}=3）+ 启发式 & 基础 & 43.4\% & 326.5 min \\
+4 & 自洽性（\emph{n}=3）+ 平均 logprob & 基础 & 44.8\% & 327.7 min \\ \bottomrule
+\end{tabularx}
+\end{table}
+
+表 B.3 的第 1 行是第 4 章中不使用自洽性的基线。第 2 行不使用评分器来打破平局，因此如果答案之间出现平局，就选择最先出现的那个。使用启发式评分器（第 3 行）作为平局打破规则会带来小幅提升。提升最大（尽管仍然很小）的是使用 logprob 评分器作为平局打破规则（第 4 行）。
+
+\subsubsection*{习题 5.2：在 best-of-N 设置中使用启发式评分器}
+
+Best-of-\emph{N} 与自洽性类似，都会生成多个答案。但它不是通过多数投票来选出最终答案，而是用一个评分函数（如 \texttt{heuristic\_score}）为所有生成的答案打分，并返回得分最高的那个。实现这种行为有几种方式，但最简单的做法是以第 4 章现有的自洽性函数为模板，把其中的评分换成 \texttt{heuristic\_score}，如下所示：
+
+\begin{codebox}
+# ...
+from reasoning_from_scratch.ch05 import (
+    heuristic_score
+)
+
+def self_consistency_vote( #...):
+    full_answers, short_answers = [], []
+    counts = Counter()
+    groups = {}
+    majority_winners, final_answer = [], None
+    best_score, best_idx = float("-inf"), None
+
+    for i in range(num_samples):
+        if seed is not None:
+            torch.manual_seed(seed + i + 1)
+
+        answer = generate_text_stream_concat_flex(
+            model=model,
+            tokenizer=tokenizer,
+            prompt=prompt,
+            device=device,
+            max_new_tokens=max_new_tokens,
+            verbose=show_long_answer,
+            generate_func=generate_text_top_p_stream_cache,
+            temperature=temperature,
+            top_p=top_p,
+        )
+
+        short = extract_final_candidate(answer, fallback="number_then_full")
+        full_answers.append(answer)
+        short_answers.append(short)
+        counts[short] += 1
+
+        if short in groups:
+            groups[short].append(i)
+        else:
+            groups[short] = [i]
+
+        score = heuristic_score(answer, prompt=prompt)
+
+        if score > best_score:
+            best_score, best_idx = score, i
+        # ...
+\end{codebox}
+
+表 B.4 将基线与两种 best-of-\emph{N} 变体做了比较，一种使用启发式评分器，另一种使用平均对数概率在三个采样答案中进行选择。
+
+\begin{table}[htbp]
+\centering\small
+\centering
+\caption{表 B.4 使用启发式和平均 logprob 评分的 MATH-500 best-of-\emph{N} 得分}
+\begin{tabularx}{\linewidth}{@{}c@{}XXXX}
+\toprule
+ & 方法 & 模型 & 准确率 & 时间 \\
+1 & 使用思维链提示的基线 & 基础 & 33.4\% & 129.2 min \\
+2 & Best-of-\emph{N}（\emph{n}=3）+ 启发式 & 基础 & 40.6\% & 327.7 min \\
+3 & Best-of-\emph{N}（\emph{n}=3）+ 平均 logprob & 基础 & 43.2\% & 330.2 min \\ \bottomrule
+\end{tabularx}
+\end{table}
+
+表中的准确率和运行时间是在 MATH-500 测试集的全部 500 个样本上、使用 \texttt{"}\texttt{cuda}\texttt{"} GPU（DGX Spark）计算得到的。
+
+\subsubsection*{习题 5.3：在自洽性中使用 logprob 评分器作为平局打破规则}
+
+解法与习题 5.1 类似，只是把 \texttt{heuristic\_score} 换成 \texttt{avg\_logprob\_answer}，如下所示：
+
+\begin{codebox}
+# ...
+# from reasoning_from_scratch.ch05 import heuristic_score
+from reasoning_from_scratch.ch05 import avg_logprob_answer
+
+def evaluate_math500_stream(# ...)
+    # ...
+
+    # score = heuristic_score(
+    #    candidate_full, prompt=prompt
+    # )
+    score = avg_logprob_answer(
+        model=model,
+        tokenizer=tokenizer,
+        prompt=prompt,
+        answer=candidate_full,
+        device=device,
+    )
+   # ...
+\end{codebox}
+
+结果已列入表 B.3（习题 5.1）的第 4 行。
+
+\subsubsection*{习题 5.4：在 best-of-N 设置中使用 logprob 评分器}
+
+要实现带 logprob 评分器的 best-of-\emph{N}，可以使用习题 5.2 中的代码，把 \texttt{heuristic\_score} 换成 \texttt{avg\_logprob\_answer}，如下所示：
+
+\begin{codebox}
+from reasoning_from_scratch.ch05 import (
+    avg_logprob_answer
+)
+# ...
+            score = avg_logprob_answer(
+                model=model,
+                tokenizer=tokenizer,
+                prompt=prompt,
+                answer=answer,
+                device=device
+            )
+        if score > best_score:
+            best_score, best_idx = score, i
+# ...
+\end{codebox}
+
+得到的 MATH-500 得分见表 B.4（习题 5.2）。
+
+\subsubsection*{习题 5.5：将启发式评分用于自我修正}
+
+使用 \texttt{heuristic\_score} 比使用 logprob 评分还要简单；我们只需修改以下代码：
+
+\begin{codebox}
+from functools import partial
+
+avg_logprob_score = partial(
+    avg_logprob_answer,
+    model=model,
+    tokenizer=tokenizer,
+    device=device
+)
+torch.manual_seed(0)
+
+results_logprob = self_refinement_loop(
+    model=model,
+    tokenizer=tokenizer,
+    raw_prompt=raw_prompt,
+    device=device,
+    iterations=2,
+    max_response_tokens=2048,
+    max_critique_tokens=256,
+    score_fn=avg_logprob_score,
+    verbose=True,
+    temperature=0.7,
+    top_p=0.9,
+)
+\end{codebox}
+
+更新后的代码为
+
+\begin{codebox}
+torch.manual_seed(0)
+results_logprob = self_refinement_loop(
+    model=model,
+    tokenizer=tokenizer,
+    raw_prompt=raw_prompt,
+    device=device,
+    iterations=2,
+    max_response_tokens=2048,
+    max_critique_tokens=256,
+    score_fn=heuristic_score,  # 新增
+    verbose=True,
+    temperature=0.7,
+    top_p=0.9,
+)
+\end{codebox}
+
+相对于第 3 章基线的改进，以及第 4 章的自洽性结果，见表 5.1（第 4、5 和 10 行）。
+
+\section{第 6 章}
+
+\subsubsection*{习题 6.1：添加格式感知的奖励塑形}
+
+如果没有找到 \texttt{"}\texttt{\textbackslash\{\}boxed\{\}}\texttt{"} 形式的答案，我们可以分配部分奖励（分值 0.5），使用第 3 章中编写的 \texttt{fallback=}\texttt{"}\texttt{number\_then\_full}\texttt{"} 回退方式，如下所示：
+
+\begin{codebox}
+from reasoning_from_scratch.ch03 import (
+    extract_final_candidate, grade_answer
+)
+
+def reward_rlvr(answer_text, ground_truth):
+
+    # 1) 尝试提取被 \boxed{} 包裹的答案
+    boxed = extract_final_candidate(
+        answer_text, fallback=None
+    )
+    if boxed:
+        correct = grade_answer(boxed, ground_truth)
+        return 1.0 if correct else 0.0
+
+    # 2) 如果未找到被 \boxed{} 包裹的答案，则查找数字
+    unboxed = extract_final_candidate(
+        answer_text, fallback="number_then_full"
+    )
+    if unboxed:
+        correct = grade_answer(unboxed, ground_truth)
+        return 0.5 if correct else 0.0
+
+    return 0.0
+\end{codebox}
+
+把它接入第 6 章的代码并在相同设置下训练后，部分奖励变体得到的准确率（37.8\%）低于标准 GRPO 设置（47.4\%），尽管平均使用的词元数量相近，如表 B.5 所示。
+
+\begin{table}[htbp]
+\centering\small
+\centering
+\caption{表 B.5 严格奖励与部分奖励下的 MATH-500 准确率}
+\begin{tabularx}{\linewidth}{@{}c@{}XXXXXX}
+\toprule
+ & 方法 & 步数 & 最大词元数 & 采样轨迹数 & 准确率 & 平均词元数 \\
+1 & GRPO（第 6 章） & 50 & 512 & 8 & 47.4\% & 586.11 \\
+2 & GRPO 部分奖励（习题 6.1） & 50 & 512 & 8 & 37.8\% & 550.33 \\ \bottomrule
+\end{tabularx}
+\end{table}
+
+\subsubsection*{习题 6.2：优势（值）为零的情形}
+
+如果所有奖励都相等（例如全为 0 或全为 1），那么所有优势（值）都会是 0，因为减去均值会抵消掉共享的那部分奖励值，只留下零，如下所示：
+
+\begin{codebox}
+import torch
+
+rollout_rewards = [0., 0., 0., 0.]
+rewards = torch.tensor(rollout_rewards)
+advantages = (rewards - rewards.mean()) / (rewards.std() + 1e-4)
+print(advantages)
+\end{codebox}
+
+这会返回 \texttt{tensor([0., 0., 0., 0.])}。
+
+类似地，如果我们把采样轨迹的奖励改为 \texttt{rollout\_rewards = [0., 0., 0., 0.]}，会得到同样的全零张量 \texttt{tensor([0., 0., 0., 0.])}。
+
+简而言之，如果一组内所有奖励都相同，例如全为 0 或全为 1，那么对所有 \emph{i} 条采样轨迹都有 𝑟𝑖 - 𝜇𝑖 = 0。因此策略梯度为零，模型的参数不会针对该提示更新。
+
+这种行为是有意为之的。如果所有采样轨迹都一样差或一样好，就不存在相对信号来告诉模型应该强化或抑制哪种行为。直观地说，如果模型把所有问题都答对了，就无需更新它；反之，如果模型把所有问题都答错了，我们也不希望更新模型去强化那种行为。
+
+\section{第 7 章}
+
+\subsubsection*{习题 7.1：测试 \textless{}think\textgreater{} 格式奖励}
+
+以下代码用于检查当 \texttt{\textless{}think\textgreater{}} 词元使用不当时格式奖励是否为零：
+
+\begin{codebox}
+from pathlib import Path
+import torch
+from reasoning_from_scratch.qwen3 import Qwen3Tokenizer
+from reasoning_from_scratch.qwen3 import download_qwen3_small
+from reasoning_from_scratch.ch07 import reward_format
+
+download_qwen3_small(
+    kind="reasoning", tokenizer_only=True, out_dir="qwen3"
+)
+tokenizer_path = Path("qwen3") / "tokenizer-reasoning.json"
+tokenizer = Qwen3Tokenizer(tokenizer_file_path=tokenizer_path)
+
+prompt = "Calculate ..."
+
+def check_case(name, rollout):
+    token_ids = tokenizer.encode(prompt + rollout)
+    prompt_len = len(tokenizer.encode(prompt))
+    reward = reward_format(
+        token_ids=torch.tensor(token_ids),
+        prompt_len=prompt_len,
+    )
+    print(f"{name}: {reward}")
+
+# 1) 正确情形
+check_case(
+    "Correct order",
+    "Let's ... <think> ... </think> ..."
+)
+# 2) 标签中有拼写错误
+check_case(
+    "Typo in <think>",
+    "Let's ... <thnik> ... </think> ..."
+)
+# 3) 顺序颠倒
+check_case(
+    "Reversed order",
+    "Let's ... </think> ... <think> ..."
+)
+
+# 4) 缺少一个标签
+check_case(
+    "Missing </think>",
+    "Let's ... <think> ..."
+)
+\end{codebox}
+
+输出如下，表明该函数要求正确使用 \texttt{\textless{}think\textgreater{}}...\texttt{\textless{}/think\textgreater{}} 标签，才会给予 1.0 的奖励：
+
+\begin{codebox}
+Correct order: 1.0
+Typo in <think>: 0.0
+Reversed order: 0.0
+Missing </think>: 0.0
+\end{codebox}
+
+\subsubsection*{习题 7.2：将格式奖励设为条件奖励}
+
+条件奖励的实现非常简单；在本章中，我们讨论过按如下方式实现整体奖励：
+
+\begin{codebox}
+reward = rlvr_reward + format_reward_weight * format_reward
+\end{codebox}
+
+下面是一种在正确性奖励（\texttt{rlvr\_reward}）为 0.0 时禁用该奖励的方式：
+
+\begin{codebox}
+if conditional_reward:
+    format_reward *= rlvr_reward
+reward = rlvr_reward + format_reward_weight * format_reward
+\end{codebox}
+
+要在实践中使用它，可以在启用 \texttt{--conditional\_reward} 标志的情况下运行 \texttt{7\_6\_plus\_format\_reward.py} 脚本，也就是我们在 7.6 节中使用的那个脚本。
+
+我们可以下载这次运行的日志文件（使用与 7.6 节类似的设置），并按如下方式绘制：
+
+\begin{codebox}
+from reasoning_from_scratch.ch07 import download_from_github
+from reasoning_from_scratch.ch07 import plot_grpo_metrics
+download_from_github(
+    "ch07/02_logs/7_6_plus_format_reward_conditional_metrics.csv"
+)
+plot_grpo_metrics(
+    "7_6_plus_format_reward_conditional_metrics.csv",
+    columns=["loss", "reward_avg", "avg_response_len", "eval_acc"],
+)
+\end{codebox}
+
+\myGraphic{0.92}{images/APPB_F01_Raschka2.png}{图 B.1 使用条件格式奖励的一次 GRPO 训练运行中的基本指标}
+
+图 B.1 中的曲线表明，评估准确率和平均奖励都出现了大幅下跌，但似乎又有回升。总体来看，尽管性能出现了骤降，但这次看起来比以前更稳定，而且趋势表明，如果训练更久，性能还会进一步提升。
+
+上一张图关注的是主要的训练指标。为了更直接地考察条件格式奖励的效果，我们可以绘制同一次运行中的其他指标：
+
+\begin{codebox}
+plot_grpo_metrics(
+    "7_6_plus_format_reward_conditional_metrics.csv",
+    columns=["reward_avg", "format_reward_avg", "adv_std", "entropy_avg"],
+)
+\end{codebox}
+
+\myGraphic{0.92}{images/APPB_F02_Raschka2.png}{图 B.2 使用条件格式奖励的一次 GRPO 训练运行中的其他指标}
+
+在图 B.2 中，我们看到平均格式奖励几乎完美地跟随了平均奖励曲线，这很好地验证了条件逻辑确实在起作用。平均格式奖励还显示了在正确答案这一子集上，总奖励中有多大比例来自格式项。
+
+不过，如我们所见，由于平均格式奖励曲线与平均奖励曲线如出一辙，它主要起到额外加成的作用。看起来只要模型答对，它就会被给予；这也说得通，因为训练后的推理模型已经知道如何正确使用 \texttt{\textless{}think\textgreater{}...\textless{}/think\textgreater{}} 标签，而且我们可以看到它并没有遗忘这种能力。
+
+不过，熵的上升仍然有些令人担忧，它可能暗示存在训练不稳定的问题，可以通过其他手段来缓解（比如用更小的 \texttt{clip\_eps} 进行更严格的裁剪）。
+
+\section{第 8 章}
+
+\subsubsection*{习题 8.1：训练集和验证集长度}
+
+要计算训练集和验证集答案长度的统计信息，可以在 8.4.3 节代码清单 8.7 的末尾、划分之后添加以下命令：
+
+\begin{codebox}
+compute_length(train_examples)
+# 输出
+# Average: 1180 tokens
+# Shortest: 236 tokens (index 5730)
+# Longest: 2048 tokens (index 1319)
+\end{codebox}
+
+如你所见，平均词元长度（1180 对 1106）相当接近，两个数据集应该相对均衡。
+
+作为额外的补充，我们可以绘制直方图来可视化这些分布：
+
+\begin{codebox}
+import matplotlib.pyplot as plt
+
+train_lengths = [len(ex["token_ids"]) for ex in train_examples]
+val_lengths = [len(ex["token_ids"]) for ex in val_examples]
+
+# 对计数做归一化，因为验证集要小得多
+bins = range(0, max(train_lengths + val_lengths) + 64, 64)
+
+fig, ax = plt.subplots(figsize=(7, 4))
+ax.hist(train_lengths, bins=bins, density=True, alpha=0.6, label="Train")
+ax.hist(val_lengths, bins=bins, density=True, alpha=0.6, label="Validation")
+ax.set_xlabel("Token length")
+ax.set_ylabel("Density")
+ax.legend()
+plt.tight_layout()
+plt.show()
+\end{codebox}
+
+得到的图见图 B.3。
+
+\myGraphic{0.92}{images/APPB_F03_Raschka2.png}{图 B.3 训练集和验证集长度的分布}
+
+验证样本要少得多，这就是验证直方图看起来有些锯齿状的原因，但如你所见，它仍然很好地覆盖了整个分布。
+
+\subsubsection*{习题 8.2：不使用 词元进行蒸馏}
+
+我们可以在脚本执行命令中复现不带 \texttt{\textless{}think\textgreater{}\textless{}/think\textgreater{}} 词元的运行：
+
+\begin{codebox}
+uv run distill.py \
+--data_path deepseek-r1-math-train.json \
+--validation_size 25 \
+--epochs 3 \
+--lr 1e-5 \
+--max_seq_len 2048 \
+--grad_clip 1.0
+\end{codebox}
+
+在评估时，我们可以使用 \texttt{base} 而不是 \texttt{reasoning} 模型：
+
+\begin{codebox}
+uv run evaluate_math500.py \
+--dataset_size 500 \
+--which_model base \
+--max_new_tokens 4096 \
+--checkpoint_path \
+run_11/checkpoints/distill/qwen3-0.6B-distill-step05746-epoch1.pth
+\end{codebox}
+
+结果见表 B.6，其中新结果（不带 \texttt{\textless{}think\textgreater{}} 词元）列在前面，括号中给出对应的带 think 词元的结果（来自本章）。
+
+\begin{table}[htbp]
+\centering\small
+\centering
+\caption{表 B.6 带与不带 \texttt{\textless{}think\textgreater{}} 词元的 MATH-500 任务准确率}
+\begin{tabularx}{\linewidth}{XXXXX}
+\toprule
+方法 & 轮次 & 最终验证损失 & MATH-500 准确率 &  \\
+1 & 基础 Qwen3 0.6B（第 3 章） & - & - & 15.2\% \\
+2 & 推理 Qwen3 0.6B（第 3 章） & - & - & 48.2\% \\
+3 & DeepSeek-R1 & 1 & 0.5436 (0.5404) & 31.8\% (30.6\%) \\
+4 & DeepSeek-R1 & 2 & 0.5349 (0.5339) & 31.8\% (32.4\%) \\
+5 & DeepSeek-R1 & 3 & 0.5343 (0.5306) & 30.2\% (33.6\%) \\
+6 & Qwen3 235B-A22B & 1 & 0.4043 (0.3130) & 44.8\% (45.0\%) \\
+7 & Qwen3 235B-A22B & 2 & 0.3963 (0.3087) & 39.4\% (43.8\%) \\
+8 & Qwen3 235B-A22B & 3 & 0.3948 (0.3078) & 39.8\% (44.2\%) \\ \bottomrule
+\end{tabularx}
+\end{table}
+
+有意思的是，当省略 \texttt{\textless{}think\textgreater{}\textless{}/think\textgreater{}} 词元时，Qwen3 模型的验证损失更低，但这并没有转化为更好的建模性能。在几乎所有情况下，省略 \texttt{\textless{}think\textgreater{}} 都会让结果略微变差。

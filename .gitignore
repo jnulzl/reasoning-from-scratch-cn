@@ -1,0 +1,72 @@
+# =============================================================================
+#  LaTeX 书籍工程 .gitignore
+#  编译命令：xelatex -shell-escape -interaction=nonstopmode -synctex=1 main.tex
+#  说明：本工程用 minted + tcolorbox 写代码块，编译会产出大量中间文件，
+#        以下规则把它们全部排除，仓库里只保留「源码 + 图片 + 说明文档」。
+# =============================================================================
+
+# ---------- 1. minted / tcolorbox 的临时文件与高亮缓存 ----------
+# _minted/ 是 minted 的高亮结果缓存（465 个 .highlight.minted，可随时重建）
+_minted/
+# minted 在编译过程中写在根目录的配置/回显文件
+*.minted
+# tcolorbox 的 tcblisting 先把代码写到 \jobname.listing 再交给 minted
+*.listing
+
+# ---------- 2. LaTeX 编译中间产物 ----------
+*.aux
+*.log
+*.toc
+*.lof
+*.lot
+*.out
+*.bbl
+*.blg
+*.idx
+*.ind
+*.ilg
+*.fls
+*.fdb_latexmk
+# SyncTeX 正反向搜索数据，每次编译 12 MB 以上
+*.synctex
+*.synctex.gz
+*.synctex(busy)
+# xelatex / beamer 其他产物
+*.xdv
+*.nav
+*.snm
+*.vrb
+*.run.xml
+*.bcf
+*.loa
+*.lol
+*.spl
+# latexindent 备份文件
+*.bak*
+indent.log
+
+# ---------- 3. 编译产物 PDF（按你的选择忽略，源码可随时重建） ----------
+/main.pdf
+
+# ---------- 4. 外部参考资料 ----------
+# 内含英文原书 PDF（排版比对基准），不属于本工程源码
+/tmp/
+
+# ---------- 5. 编辑器与操作系统杂项 ----------
+.DS_Store
+Thumbs.db
+desktop.ini
+*~
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# ---------- 6. Python 缓存（构建/转换脚本用） ----------
+__pycache__/
+*.py[cod]
+
+# ---------- 7. WorkBuddy 工作区 ----------
+# 只保留人工整理的长期项目记忆，其余会话态文件不入库
+.workbuddy/*
+!.workbuddy/memory/
