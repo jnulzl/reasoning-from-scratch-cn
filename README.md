@@ -1,10 +1,6 @@
-# 《从零构建推理模型》中文版 —— LaTeX 工程（按 Cpp23-Best-Practices 模板重排）
-
-由 `D:/Ego/trans/latex_source`（旧版单层 `chapters/*.tex`）重排而来，**不影响旧目录**，可直接对照编译结果。
+# 《从零构建推理模型》中文版 —— LaTeX 工程
 
 ## 目录结构
-
-结构照搬 `Cpp23-Best-Practices-20251127` 模板：
 
 ```
 latex_source_v2/

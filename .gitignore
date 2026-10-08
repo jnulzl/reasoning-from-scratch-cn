@@ -67,6 +67,7 @@ __pycache__/
 *.py[cod]
 
 # ---------- 7. WorkBuddy 工作区 ----------
+.workbuddy
 # 只保留人工整理的长期项目记忆，其余会话态文件不入库
 .workbuddy/*
 !.workbuddy/memory/
