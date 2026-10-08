@@ -33,7 +33,7 @@ xelatex -shell-escape -interaction=nonstopmode main.tex
 xelatex -shell-escape -interaction=nonstopmode main.tex
 ```
 
-如果环境配置或者编译失败可以直接到[releases](https://github.com/jnulzl/reasoning-from-scratch-cn/releases)下载最新的pdf文件
+如果环境配置遇到问题或者编译失败可以直接到[releases](https://github.com/jnulzl/reasoning-from-scratch-cn/releases)下载最新的pdf文件
 
 ## 官方代码
 
