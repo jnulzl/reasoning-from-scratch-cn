@@ -26,6 +26,8 @@ latex_source_v2/
 build.bat                          REM Windows 双击即可
 ```
 
+> 如果环境配置遇到问题或者编译失败可以直接到[releases](https://github.com/jnulzl/reasoning-from-scratch-cn/releases)下载最新的pdf文件
+
 或手工执行（**必须加 `-shell-escape`**；目录与书签需连跑三遍才完全稳定）。
 **注意 `TEXMF_OUTPUT_DIRECTORY` 必须设成项目根的绝对路径**，否则代码块会全部高亮失败
 （详见下方「疑难排查」）：
@@ -180,6 +182,7 @@ TeX Live 2026 把 minted 升到了 v3（底层可执行文件由 `pygmentize` �
 
 > 对照：本工程其余文件（`README.md`、`book/ccs.tex` 等）保持 **UTF-8**，
 > 由 LaTeX / 编辑器正确处理，不受此问题影响——**只有 `.bat` 有这个约束**。
+
 
 ## 官方代码
 
