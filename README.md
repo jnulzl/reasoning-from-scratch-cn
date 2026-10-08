@@ -26,21 +26,27 @@ latex_source_v2/
 build.bat                          REM Windows 双击即可
 ```
 
-或手工执行（**必须加 `-shell-escape`**；目录与书签需连跑三遍才完全稳定）：
+或手工执行（**必须加 `-shell-escape`**；目录与书签需连跑三遍才完全稳定）。
+**注意 `TEXMF_OUTPUT_DIRECTORY` 必须设成项目根的绝对路径**，否则代码块会全部高亮失败
+（详见下方「疑难排查」）：
 
 ```bat
-set PATH=D:\ProgramData\texlive\2026\bin\windows;D:\anaconda3;%PATH%
+set TEXBIN=D:\ProgramData\texlive\2026\bin\windows
+set PYTHON=D:\anaconda3
+set PATH=%PYTHON%;%TEXBIN%;%PATH%
 set PYTHONPATH=
-set SELFAUTOLOC=D:\ProgramData\texlive\2026\bin\windows
+set SELFAUTOLOC=%TEXBIN%
+
+REM 【关键】必须设成【项目根的绝对路径】（这里按你的实际路径改）
+set TEXMF_OUTPUT_DIRECTORY=D:\Ego\trans\latex_source_v2\tmp\reasoning-from-scratch-cn
+set TEXMFOUTPUT=%TEXMF_OUTPUT_DIRECTORY%
 
 xelatex -shell-escape -interaction=nonstopmode -synctex=1 main.tex
 xelatex -shell-escape -interaction=nonstopmode -synctex=1 main.tex
 xelatex -shell-escape -interaction=nonstopmode -synctex=1 main.tex
 ```
 
-> 只要 `ccs.tex` 里那段 `\minted@cachedir` 修复在位，**无需设置任何
-> `TEXMF_OUTPUT_DIRECTORY` / `TEXMFOUTPUT` 环境变量**（反而应当清空，
-> 避免其空值/残留值干扰导言区的求值）。
+> 用 `build.bat` 时这些都不用手动设——脚本里用 `%~dp0` 自动填好了。
 
 ### 疑难排查：代码块全部编译失败
 
@@ -97,24 +103,38 @@ TeX Live 2026 把 minted 升到了 v3（底层可执行文件由 `pygmentize` �
 
    ```latex
    \makeatletter
-   \CatchFileDef{\mintedProjectRoot}{|"kpsewhich --var-value PWD"}%
+   % 依次尝试两个环境变量，取第一个非空者
+   \CatchFileDef{\mintedProjectRoot}{|"kpsewhich --var-value TEXMF_OUTPUT_DIRECTORY"}%
      {\minted@standardcatcodes\endlinechar=-1}%
    \def\minted@stripcr#1\r{#1}%
    \edef\mintedProjectRoot{\expandafter\minted@stripcr\mintedProjectRoot\r}%
-   \edef\minted@cachedir{\mintedProjectRoot}%
+   \ifx\mintedProjectRoot\@empty
+     \CatchFileDef{\mintedProjectRoot}{|"kpsewhich --var-value TEXMFOUTPUT"}%
+       {\minted@standardcatcodes\endlinechar=-1}%
+     \edef\mintedProjectRoot{\expandafter\minted@stripcr\mintedProjectRoot\r}%
+   \fi
+   % 非空才覆盖；为空则保留默认值并报警（避免设成空串引发连锁错误）
+   \ifx\mintedProjectRoot\@empty
+     \PackageWarning{minted-cn}{Cannot determine project root ...}%
+   \else
+     \edef\minted@cachedir{\mintedProjectRoot}%
+   \fi
    \makeatother
    ```
 
    连带效果是 `\minted@cachepath` 变成 `<绝对路径>/`，`latexminted` 拿到的
    所有待写路径都是绝对路径，全部落在项目根目录内、校验通过。
 
-   > **为什么读 `PWD` 而不是 `TEXMFOUTPUT`？**
-   > 第一版曾用 `kpsewhich --var-value TEXMFOUTPUT`，但该变量**默认为空**，
-   > 空值会让 `\minted@cachedir` 变成空串 → 仍是相对路径 → 465 处代码块照样
-   > 全灭，还会连带炸出 `\pydatawritekeyedefvalue` 一类莫名错误。
-   > `PWD` 恒等于运行 `xelatex` 的目录，**不依赖任何环境变量**，所以最稳。
-   > 实测：清空 `TEXMFOUTPUT` / `TEXMF_OUTPUT_DIRECTORY` 后编译仍然
-   > `exit=0 / errors=0`，463 个高亮缓存正常落到项目根目录。
+   > ⚠ **千万不要用 `kpsewhich --var-value PWD`！**
+   > `PWD` 是 **bash 专有**的环境变量，`cmd.exe` / PowerShell 下并不存在，
+   > `kpsewhich` 会返回**空**。这个坑极其隐蔽：在 git-bash 里测试全部通过，
+   > 一旦双击 `build.bat`（cmd 环境）就变成空串 → 465 处代码块全灭。
+   > 所以必须依赖 `build.bat` 用 `%~dp0` 设好的绝对路径变量。
+
+   > 空值必须单独处理：把 `\minted@cachedir` 设成空串不会「退回默认」，
+   > 反而会连带炸出 `\pydatawritekeyedefvalue`、`Use of ??? doesn't match
+   > its definition` 等一串看似无关的错误。所以上面用 `\ifx...\@empty`
+   > 把空值挡在外面。
 
    > 注意：必须直接改 `\minted@cachedir` 宏本身，**不能**用
    > `\setminted{cachedir=...}`——minted 只为它注册了带 `.estore` 的描述子，

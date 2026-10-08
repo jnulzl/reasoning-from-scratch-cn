@@ -154,30 +154,40 @@
 %  连带效果：\minted@cachepath 变成 "<绝对路径>/"，于是 latexminted 拿到的
 %  所有待写路径都是绝对路径，全部落在项目根目录内、校验通过。
 %
-%  项目根目录怎么求？——用 kpsewhich 读 PWD，即 TeX 进程的当前工作目录。
-%  这是【唯一不依赖任何环境变量】的来源，因此最稳：
-%      TEXMFOUTPUT          → 常为空（空值会让 cachedir 变成空串 → 仍是相对路径 → 全灭）
-%      TEXMF_OUTPUT_DIRECTORY→ 同上
-%      PWD                  → 恒等于运行 xelatex 的目录，正是我们要的项目根
-%  ⚠ 踩坑记录：最早用的是 TEXMFOUTPUT，结果一旦该变量为空（默认情况），
-%    \CatchFileDef 读回空行 → \minted@cachedir 变空串 → 仍然全灭，
-%    而且会连带炸出 \pydatawritekeyedefvalue 等一串莫名错误。改用 PWD 后此问题消失。
-%  注意 \CatchFileDef 读进来的是整行原文，Windows 下可能带 CRLF：
-%    \endlinechar=-1 杀掉行尾的 \n（与 minted 内部做法一致），
-%    再用 \minted@stripcr 兜底吃掉可能残留的 \r，避免路径里混入控制字符。
+%  项目根目录怎么求？——读 TEXMF_OUTPUT_DIRECTORY / TEXMFOUTPUT 环境变量
+%  （由 build.bat 用 %~dp0 设成项目根的绝对路径）。
+%  ⚠ 不要用 `kpsewhich --var-value PWD`！PWD 是 bash 专有的环境变量，
+%    在 cmd.exe / PowerShell 下并不存在，kpsewhich 会返回【空】，
+%    于是 \minted@cachedir 变成空串 → 仍旧全灭。这个坑很隐蔽：
+%    在 git-bash 里测试全部通过，一双击 build.bat 就挂。
+%  读回来后必须：
+%    1) 判空 —— 若两个变量都没设，宁可保持 minted 默认值并给出警告，
+%       也不要把它设成空串（空串会连带炸出 \pydatawritekeyedefvalue 等一堆错误）；
+%    2) 剥掉 CRLF 残留（Windows 下 kpsewhich 输出带 \r）。
 %  注意：必须直接改 \minted@cachedir 宏本身，不能用 \setminted{cachedir=}，
 %  因为 minted 只为 cachedir 注册了带 .estore 的描述子，空值会被 pgfkeys 拒绝。
 \makeatletter
-% 1) 取 PWD 的绝对路径（kpsewhich 会把行尾的 \n 之外的内容原样输出；
-%    这里再补一个 \r 兜底，防止 CRLF 环境残留控制字符）。
-%    实测：\endlinechar=-1 之后读到的通常已经是干净路径，
-%    但多剥一次 \r 成本极低，且能避免"路径里混入不可见字符"这类玄学失败。
-\CatchFileDef{\mintedProjectRoot}{|"kpsewhich --var-value PWD"}%
+% 1) 依次尝试两个环境变量，取第一个非空者
+\CatchFileDef{\mintedProjectRoot}{|"kpsewhich --var-value TEXMF_OUTPUT_DIRECTORY"}%
   {\minted@standardcatcodes\endlinechar=-1}%
-\def\minted@stripcr#1\r{#1}%          % 吃掉第一个 \r 之后的一切
+\def\minted@stripcr#1\r{#1}%
 \edef\mintedProjectRoot{\expandafter\minted@stripcr\mintedProjectRoot\r}%
-% 2) 赋给 minted 的缓存目录
-\edef\minted@cachedir{\mintedProjectRoot}%
+\ifx\mintedProjectRoot\@empty
+  \CatchFileDef{\mintedProjectRoot}{|"kpsewhich --var-value TEXMFOUTPUT"}%
+    {\minted@standardcatcodes\endlinechar=-1}%
+  \edef\mintedProjectRoot{\expandafter\minted@stripcr\mintedProjectRoot\r}%
+\fi
+% 2) 只在非空时才覆盖 minted 的默认值；为空则保留 "_minted" 并明确报警
+\ifx\mintedProjectRoot\@empty
+  \PackageWarning{minted-cn}{%
+    Cannot determine project root: neither TEXMF_OUTPUT_DIRECTORY nor
+    TEXMFOUTPUT is set. Code blocks will FAIL to highlight.^^J%
+    Please build via build.bat, or set TEXMF_OUTPUT_DIRECTORY to the^^J%
+    absolute path of the project root before running xelatex.}%
+\else
+  \edef\minted@cachedir{\mintedProjectRoot}%
+  \typeout{minted-cn: cachedir = \minted@cachedir}%
+\fi
 \makeatother
 
 % 注册原书配色：先把它读进 \minted@styledef@manning，minted 就不会再去找 Python 样式。

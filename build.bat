@@ -26,18 +26,26 @@ REM 导致代码块静默退化
 set PYTHONPATH=
 
 REM =============================================================
-REM  代码高亮（minted v3 / latexminted）在 Windows 上的路径限制：
+REM  【关键】代码高亮（minted v3 / latexminted）的缓存目录
+REM
 REM  latexminted 写入前会校验目标路径，【相对路径一律被拒】，
-REM  导致 465 处代码块全部报
+REM  而 minted 默认 cachedir="_minted" 正是相对路径，
+REM  结果 465 处代码块全部报
 REM      Cannot write file "_xxx.index.minted" outside working directory
 REM
-REM  本工程已在 book/ccs.tex 里把 \minted@cachedir 设成项目根目录的
-REM  绝对路径（用 kpsewhich 读 PWD 求值，不依赖任何环境变量），
-REM  因此这里【无需设置 TEXMFOUTPUT / TEXMF_OUTPUT_DIRECTORY】。
-REM  下面把这两个变量清空，避免外部残留值干扰 latexminted 的判定。
+REM  book/ccs.tex 会把 \minted@cachedir 改写成「项目根目录的绝对路径」，
+REM  其值取自下面这两个环境变量（优先 TEXMF_OUTPUT_DIRECTORY）。
+REM  所以这里【必须把它们设成项目根的绝对路径】——%~dp0 就是本脚本所在
+REM  目录（末尾自带反斜杠），即工程根。
+REM  注意：不要依赖 PWD —— 那是 bash 专有变量，cmd 下不存在；
+REM        也不要留空 —— 空值会让 cachedir 变成空串，照样全灭。
 REM =============================================================
-set TEXMFOUTPUT=
-set TEXMF_OUTPUT_DIRECTORY=
+REM  ~dp0 末尾自带反斜杠；用 for 的 %%~f 取"去尾斜杠的绝对路径"，
+REM  既干净又避开 `if "x:~-1%"=="\"` 这个经典的引号解析坑。
+REM  两个变量都强制设成工程根，不要沿用外部可能存在的旧值。
+for %%A in ("%~dp0.") do set "TEXMF_OUTPUT_DIRECTORY=%%~fA"
+set "TEXMFOUTPUT=%TEXMF_OUTPUT_DIRECTORY%"
+echo [build] project root = %TEXMF_OUTPUT_DIRECTORY%
 
 REM minted 需要 shell escape；目录与书签需要连跑三遍才完全稳定
 xelatex -shell-escape -interaction=nonstopmode -synctex=1 main.tex
