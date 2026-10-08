@@ -124,6 +124,62 @@
 \newcommand{\codefont}{\fontsize{8bp}{10.11bp}\selectfont}
 \setminted{obeytabs, tabsize=2, breaklines=true, breakanywhere=true,
            fontsize=\codefont, autogobble=true}
+% -----------------------------------------------------------------------------
+%  【关键】minted v3 在 Windows 下的缓存目录必须是绝对路径
+% -----------------------------------------------------------------------------
+%  latexminted 写任何文件前都要过 latexrestricted 的安全校验
+%  （_restricted_pathlib.py 的 writable_dir()）：
+%      elif self.is_absolute() and not any(self.is_relative_to(p)
+%                                          for p in self.tex_texmfoutput_roots()):
+%          -> 拒绝
+%  也就是说：
+%    * 绝对路径  → 必须落在 tex_texmfoutput_roots()（由 TEXMFOUTPUT /
+%      TEXMF_OUTPUT_DIRECTORY 环境变量填充，且是绝对路径）之内；
+%    * 相对路径  → 直接判负（is_absolute() 为假，短路进不了任何放行分支）。
+%  而 minted 默认 \minted@cachedir = "_minted"，生成的文件名是
+%      "_minted/<md5>.highlight.minted"、"<md5>.style.minted"、"<md5>.pygtex" …
+%  全是【相对路径】——于是 465 处代码块全部写入失败。
+%  更坑的是 latexminted 把真实原因吞进 _<md5>.message.minted，
+%  只在 LaTeX 侧留下极具误导性的一句：
+%      Cannot write file "_xxx.index.minted" outside working directory,
+%      TEXMFOUTPUT, and TEXMF_OUTPUT_DIRECTORY.
+%  （看到这句先别去查工作目录，几乎一定是相对/绝对路径判定问题）
+%
+%  实测（latexminted 0.7.0 + latexrestricted 0.6.2）：
+%      cachedir="_minted"（默认）        → 写入被拒
+%      cachedir=""                       → 写入被拒（仍是相对路径）
+%      cachedir="<项目根绝对路径>"        → 正常 ← 唯一可行
+%
+%  修法：把 \minted@cachedir 设成【项目根目录的绝对路径】。
+%  连带效果：\minted@cachepath 变成 "<绝对路径>/"，于是 latexminted 拿到的
+%  所有待写路径都是绝对路径，全部落在项目根目录内、校验通过。
+%
+%  项目根目录怎么求？——用 kpsewhich 读 PWD，即 TeX 进程的当前工作目录。
+%  这是【唯一不依赖任何环境变量】的来源，因此最稳：
+%      TEXMFOUTPUT          → 常为空（空值会让 cachedir 变成空串 → 仍是相对路径 → 全灭）
+%      TEXMF_OUTPUT_DIRECTORY→ 同上
+%      PWD                  → 恒等于运行 xelatex 的目录，正是我们要的项目根
+%  ⚠ 踩坑记录：最早用的是 TEXMFOUTPUT，结果一旦该变量为空（默认情况），
+%    \CatchFileDef 读回空行 → \minted@cachedir 变空串 → 仍然全灭，
+%    而且会连带炸出 \pydatawritekeyedefvalue 等一串莫名错误。改用 PWD 后此问题消失。
+%  注意 \CatchFileDef 读进来的是整行原文，Windows 下可能带 CRLF：
+%    \endlinechar=-1 杀掉行尾的 \n（与 minted 内部做法一致），
+%    再用 \minted@stripcr 兜底吃掉可能残留的 \r，避免路径里混入控制字符。
+%  注意：必须直接改 \minted@cachedir 宏本身，不能用 \setminted{cachedir=}，
+%  因为 minted 只为 cachedir 注册了带 .estore 的描述子，空值会被 pgfkeys 拒绝。
+\makeatletter
+% 1) 取 PWD 的绝对路径（kpsewhich 会把行尾的 \n 之外的内容原样输出；
+%    这里再补一个 \r 兜底，防止 CRLF 环境残留控制字符）。
+%    实测：\endlinechar=-1 之后读到的通常已经是干净路径，
+%    但多剥一次 \r 成本极低，且能避免"路径里混入不可见字符"这类玄学失败。
+\CatchFileDef{\mintedProjectRoot}{|"kpsewhich --var-value PWD"}%
+  {\minted@standardcatcodes\endlinechar=-1}%
+\def\minted@stripcr#1\r{#1}%          % 吃掉第一个 \r 之后的一切
+\edef\mintedProjectRoot{\expandafter\minted@stripcr\mintedProjectRoot\r}%
+% 2) 赋给 minted 的缓存目录
+\edef\minted@cachedir{\mintedProjectRoot}%
+\makeatother
+
 % 注册原书配色：先把它读进 \minted@styledef@manning，minted 就不会再去找 Python 样式。
 % 注意：minted 只有在 \minted@defstyle@load 里才会调 \minted@detectconfig 初始化缓存路径，
 % 我们绕过了那条路，所以这里必须显式补一次。

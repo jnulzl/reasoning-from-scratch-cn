@@ -8,6 +8,8 @@
 # ---------- 1. minted / tcolorbox 的临时文件与高亮缓存 ----------
 # _minted/ 是 minted 的高亮结果缓存（465 个 .highlight.minted，可随时重建）
 _minted/
+# latexminted 写在输出目录下的中间文件（_<jobname-md5>.{config,data,index,message,errlog}.minted）
+_*.minted
 # minted 在编译过程中写在根目录的配置/回显文件
 *.minted
 # tcolorbox 的 tcblisting 先把代码写到 \jobname.listing 再交给 minted
