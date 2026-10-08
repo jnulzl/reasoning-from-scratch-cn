@@ -57,6 +57,11 @@ for %%A in ("%~dp0.") do set "TEXMF_OUTPUT_DIRECTORY=%%~fA"
 set "TEXMFOUTPUT=%TEXMF_OUTPUT_DIRECTORY%"
 echo [build] project root = %TEXMF_OUTPUT_DIRECTORY%
 
+REM Make the project root the current directory. Everything below is then
+REM written next to build.bat regardless of how the script was launched,
+REM so the cleanup at the end really does hit "the current directory".
+cd /d "%~dp0."
+
 REM minted needs shell escape; TOC/bookmarks need three passes to settle.
 xelatex -shell-escape -interaction=nonstopmode -synctex=1 main.tex
 if errorlevel 1 goto :err
@@ -74,6 +79,45 @@ if not errorlevel 1 (
   echo        - is python.exe on PATH?
   echo        - does book/ccs.tex resolve \minted@cachedir to an absolute path?
   goto :err
+)
+
+REM =============================================================
+REM  CLEANUP: remove *.minted from the current directory
+REM
+REM  Reached only after all three xelatex passes AND both checks above
+REM  have succeeded, so nothing is deleted from a failed build.
+REM
+REM  Why the files pile up: \minted@cachedir is the absolute project root
+REM  (see the [CRITICAL] note above), and minted writes each code block's
+REM  highlighting result as <md5>.highlight.minted straight into it.
+REM  Those files are produced with \immediate\openout, and TeX does NOT
+REM  auto-delete immediate writes at \end{document} -- so up to 3 x 465
+REM  of them accumulate per build.
+REM
+REM  All of them are listed in .gitignore and are regenerated on the next
+REM  run, so deleting them is safe. _minted\ (the Python-side cache, keyed
+REM  by code hash) is deliberately kept, which is why the next build is
+REM  still fast. main.listing is NOT caught by *.minted and is handled
+REM  separately below -- it cannot be deleted from inside TeX at all,
+REM  because tcolorbox holds it open via \newwrite.
+REM
+REM  NB: never write `del "*.minted"` -- cmd.exe would treat the quoted
+REM  wildcard as a single (spaced) path and refuse. The `for` form below
+REM  passes each concrete name to del, which always works. It also means
+REM  the "nothing to delete" case is silent instead of erroring out.
+REM =============================================================
+echo.
+echo [cleanup] removing *.minted from the current directory...
+for %%F in ("%CD%\*.minted") do @del /q "%%~fF" 2>nul
+for %%F in ("%CD%\*.listing") do @del /q "%%~fF" 2>nul
+
+set "LEFT=0"
+for %%F in ("%CD%\*.minted") do set /a LEFT+=1
+if "%LEFT%"=="0" (
+  echo [cleanup] done - no *.minted files left.
+) else (
+  echo [cleanup] WARN: %LEFT% *.minted still locked. A TeX process may
+  echo           still be running. Re-run build.bat to clear them.
 )
 
 echo.
