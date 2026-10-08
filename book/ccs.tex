@@ -37,10 +37,33 @@
 % 页面尺寸：与原书实测一致 —— 531.36bp × 628.83bp（7.380in × 8.734in）
 % 版心宽 375bp；左右边距取原书奇偶页实测平均值（原书有 ±4.5bp 的奇偶偏移）
 % 若想换成模板默认的 A4，把下面这行替换为：\usepackage[a4paper,left=2.5cm,right=2cm,top=2.54cm,bottom=2.54cm]{geometry}
+%
+% -----------------------------------------------------------------------------
+%  ★ 想改页边距，只动下面 geometry 这一段（单位一律用 bp = 1/72in，与 PDF 同单位）
+%  ── 左右边距 ──
+%    left / right 就是「纸张左/右边缘 → 版心边缘」的距离。
+%    版心宽 = paperwidth − left − right（现 531.36 − 97.5 − 58.86 = 375bp）
+%    改左右不改变页面尺寸，但版心宽一变，换行与全书分页都会重排（需连跑两遍）。
+%    ⚠ 三处按固定值排版的元素会跟着出问题：
+%      · 页眉章名的「整页居中」补偿量 —— 已自动跟随 left/right（见 \headcenterfix），无需管；
+%      · 章首钢蓝横线右缘钉在 x=474.18、米色盒左缘突出 19.93bp、图注左缘突出 36bp；
+%        所以 right 改到 <56.9bp 时正文会压过横线，left 改到 <21bp 时米色盒会出纸。
+%  ── 上下边距 ──
+%    top    → 正文首行基线 y = top + 9.96bp（9.96bp 即 \topskip 的 10pt）
+%    bottom → 正文末行基线 y ≈ paperheight − bottom（实测 628.83 − 25.83 = 603.00 正好吻合）
+%    headsep→ 页眉基线 y = top − headsep − 3.6bp（实测）
+%             想只改 top 而不动页眉，就令 headsep = top − 36.90bp
+%             （现在 50.64 − 36.90 = 13.74，页眉恰好钉在原书的 y=33.30）
+%    改 top / bottom 会改变每页行数（版心高 = paperheight − top − bottom，现 552.34bp，
+%    13bp/行），因此全书分页重排。
+%  ── 整页尺寸 ──
+%    paperwidth / paperheight 是全部绝对坐标的参照系：章首横线与巨型章号、章首页页码的
+%    xshift/yshift 都按纸边定位，改纸张尺寸必须把这些数字重新量一遍。
+% -----------------------------------------------------------------------------
 \usepackage[
   paperwidth=531.36bp, paperheight=628.83bp,
   left=97.5bp, right=58.86bp,
-  top=50.64bp, bottom=25.83bp,     % 使正文首/末行基线落在原书的 y=60.6 / y=603.0
+  top=50.64bp, bottom=45.83bp,     % 使正文首/末行基线落在原书的 y=60.6 / y=603.0
   headheight=15bp, headsep=13.74bp,% 页眉基线落在 y=33.30（原书实测）
   footskip=12bp]{geometry}
 
@@ -173,9 +196,23 @@
 % -----------------------------------------------------------------------------
 %  图表
 % -----------------------------------------------------------------------------
+% 图注左缘的悬挂量：
+%   0bp  = 与【正文】左缘对齐（当前设置，正文左缘 x=97.5bp）
+%   36bp = 悬挂到页边距，与节标题的悬挂编号左缘齐平（Manning 原书版式，
+%          若要还原成原书样子就改回 36bp；那会让图注左缘落在 x=61.5bp）
+% 无论取值多少，图注右缘始终与正文右缘（x=472.5bp）对齐，通栏两端对齐。
+\newcommand{\myGraphicCapHang}{0bp}
+% 图注（caption）的对齐方式：
+%   \myGraphicCapCentertrue  = 逐行居中（当前设置）
+%   \myGraphicCapCenterfalse = 通栏两端对齐，与原书一致
+% 居中时图注盒宽恒为 \textwidth，因此图注中心 = 版心中线 = 图片中心；
+% 悬挂量 \myGraphicCapHang 仅在两端对齐模式下生效（居中模式下被忽略，
+% 否则图注盒会跟着左移，居中点就跑偏了）。
+\newif\ifmyGraphicCapCenter
+\myGraphicCapCentertrue
 \ExplSyntaxOn
 % 插图（不浮动，紧跟正文； caption 为图注文字）
-% 图注对齐原书：8bp 无衬线，左缘悬挂到页边距（比版心左缘突出 36bp），通栏两端对齐
+% 图注：8bp 无衬线
 \NewDocumentCommand { \myGraphic } { mmm }
 {
   \par\medskip\noindent
@@ -184,7 +221,11 @@
   \end{center}
   \nopagebreak\vspace{3bp}\noindent
   {\fontsize{8bp}{10.5bp}\selectfont
-   \hspace*{-36bp}\parbox{\dimexpr\textwidth+36bp\relax}{#3}}\par
+   \ifmyGraphicCapCenter
+     \parbox{\textwidth}{\centering #3}%
+   \else
+     \hspace*{-\myGraphicCapHang}\parbox{\dimexpr\textwidth+\myGraphicCapHang\relax}{#3}%
+   \fi}\par
   \medskip
 }
 \ExplSyntaxOff
@@ -280,6 +321,28 @@
 \newcommand{\mychaptergiant}{}
 \newcommand{\mychapterset}[1]{\gdef\mychaptergiant{#1}}
 \newcommand{\mychapterclear}{\gdef\mychaptergiant{}}
+% ---------------------------------------------------------------------------
+%  章标题的「上间距」（= titlesec 的 before-skip，即标题块距版心顶的距离）
+%  ★ 想调整 \myFront（前言/致谢/索引…）标题的高低，只改 \myFrontTopSkip 这一个值 ★
+%    换算关系（实测 1:1）：标题末行基线 y = 181.55 + (本值 − 10.89) bp
+%      · 每 +1bp，标题下移 1bp；每 −1bp，标题上移 1bp
+%      · 想直接落在 y = Y：写 Y − 170.66 bp（允许负值；上移别越过页眉基线 33.30）
+%    默认 10.89bp → 基线 181.55，与章首页标题完全对齐。
+%  注意 \myChapter / \myAppendix / \myFront / 目录 共用同一个 numberless 章格式，
+%  而 \myFront 用「局部覆盖 + 用完还原」的方式单独取值，所以改 \myFrontTopSkip
+%  不会影响章首页与附录。
+%  ⚠ \myChapterTopSkip 若改动，章首页的钢蓝横线（y=193.80）与巨型章号（基线
+%    217.88）是绝对坐标 overlay，不会跟着动，必须同步改 \chapterdecor 里的 yshift。
+%  ── 改了值却「没反应」的三种常见原因 ──
+%   1. 看错页：**目录页不吃 \myFrontTopSkip**（\tableofcontents 走的是 \myChapterTopSkip），
+%      章首页、附录同理。\myFrontTopSkip 只作用于 index.tex 里的 \myFront 调用：
+%      献词 / 前言 / 致谢 / 关于本书 / 关于作者 / 关于封面插图 / 索引。
+%   2. 改得太少：换算 1:1，10.89→15 只差 4bp（约 1.4mm），肉眼基本看不出。
+%      要验证请一次跨 30–50bp，或用下面 \myFront 里的 \typeout 到 main.log 里核对实际取值。
+%   3. 没编译到：请确认改的是 latex_source_v2/book/ccs.tex，且编译根文件是本目录的 main.tex。
+% ---------------------------------------------------------------------------
+\newcommand{\myChapterTopSkip}{10.89bp}
+\newcommand{\myFrontTopSkip}{-10.89bp}   % ★ 想调整 \myFront（前言/致谢/索引…）标题高低，改这个值
 \newcommand{\chapterdecor}{%
   \ifx\mychaptergiant\empty\else      % 与 \empty 比较「含义」，无需展开，空则整块不画
     \begin{tikzpicture}[remember picture,overlay]
@@ -296,7 +359,7 @@
 \titleformat{\chapter}[display]
   {\fontsize{30bp}{32bp}\selectfont\itshape\color{chapterblue}\raggedleft}
   {\thechapter}{10bp}{}
-\titlespacing*{\chapter}{0bp}{10.89bp}{0bp}
+\titlespacing*{\chapter}{0bp}{\myChapterTopSkip}{0bp}
 % 章名块固定高 64bp（= 2 行）且底部对齐：这样无论标题占 1 行还是 2 行，
 % 末行基线都恒定在原书的 y=181.55，章名下的钢蓝横线也就恒定在 y=193.80。
 \titleformat{name=\chapter,numberless}[display]
@@ -304,7 +367,7 @@
   {}{0bp}{\chapterdecor\vbox to 64bp\bgroup\vfil}
   [\egroup]
 \makeatother
-\titlespacing*{name=\chapter,numberless}{0bp}{10.89bp}{2.6em}
+\titlespacing*{name=\chapter,numberless}{0bp}{\myChapterTopSkip}{2.6em}
 % 节：12.5bp，编号悬挂在版心左侧、右缘距标题 15.5bp（原书实测）
 \titleformat{\section}
   {\fontsize{12.5bp}{15bp}\selectfont\color{chapterblue}\sffamily}
@@ -380,8 +443,17 @@
 \fancyhf{}
 % 原书页眉：章名居中于「整页」而非版心（版心中心 285bp vs 页面中心 265.68bp，差 19.32bp）
 % makebox[0pt][c] + 右侧等量留空 = 把居中点整体左移 19.32bp
+% 补偿量恒等于「左边距 − 右边距」（现 97.5 − 58.86 = 38.64bp），这里按 geometry 的结果自动算，
+% 于是以后改 left/right 页眉仍然居中在整页，不必再手工同步这个数字。
+\newlength{\headcenterfix}
+\setlength{\headcenterfix}{2\oddsidemargin}%   2×(\oddsidemargin + 1in)
+\addtolength{\headcenterfix}{2in}
+\addtolength{\headcenterfix}{\textwidth}%      + 版心宽  → 2×版心中心
+\addtolength{\headcenterfix}{-\paperwidth}%    − 纸宽    → 2×(版心中心 − 页面中心)
+\typeout{[layout] textwidth=\the\textwidth\space headcenterfix=\the\headcenterfix
+         \space (1bp=0.99624pt; 375bp=376.41pt, 38.64bp=38.79pt)}
 \fancyhead[C]{\makebox[0bp][c]{\color{ink}\sffamily\fontsize{9bp}{11bp}\selectfont
-  \leftmark\hspace*{38.64bp}}}
+  \leftmark\hspace*{\headcenterfix}}}
 \fancyhead[R]{\color{ink}\fontsize{9bp}{11bp}\selectfont\bfseries\thepage}
 \renewcommand{\headrulewidth}{0bp}
 \renewcommand{\footrulewidth}{0bp}
@@ -458,10 +530,16 @@
   \subfile{#3}
 }
 % 前言类：进目录但无编号
+% 标题上间距用 \myFrontTopSkip 单独指定（想调高低只改那个值），
+% 用完立刻还原成章标题默认值，避免影响其后的 \myChapter / \myAppendix。
 \NewDocumentCommand { \myFront } { mm }
 {
   \mychapterclear
+  \typeout{[myFront]TopSkip=\myFrontTopSkip}%   ← 诊断：该值会打进 main.log
+                                               %   改完在 main.log 里搜 "myFront]TopSkip" 即可确认是否生效
+  \titlespacing*{name=\chapter,numberless}{0bp}{\myFrontTopSkip}{2.6em}
   \chapter*{#1}
+  \titlespacing*{name=\chapter,numberless}{0bp}{\myChapterTopSkip}{2.6em}
   \addcontentsline{toc}{chapter}{#1}
   \chapmark{#1}
   \subfile{#2}
