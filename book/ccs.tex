@@ -203,16 +203,21 @@
 % 无论取值多少，图注右缘始终与正文右缘（x=472.5bp）对齐，通栏两端对齐。
 \newcommand{\myGraphicCapHang}{0bp}
 % 图注（caption）的对齐方式：
-%   \myGraphicCapCentertrue  = 逐行居中（当前设置）
-%   \myGraphicCapCenterfalse = 通栏两端对齐，与原书一致
-% 居中时图注盒宽恒为 \textwidth，因此图注中心 = 版心中线 = 图片中心；
-% 悬挂量 \myGraphicCapHang 仅在两端对齐模式下生效（居中模式下被忽略，
-% 否则图注盒会跟着左移，居中点就跑偏了）。
+%   \myGraphicCapCentertrue  = 逐行居中（图注中心 = 版心中线 = 图片中心）
+%   \myGraphicCapCenterfalse = 通栏两端对齐，左缘与正文左缘（x=97.5bp）齐平（当前设置）
+% 居中模式下图注盒宽恒为 \textwidth；因此悬挂量 \myGraphicCapHang 只在两端对齐
+% 模式下生效（居中模式会忽略它，否则图注盒跟着左移、居中点就跑偏了）。
 \newif\ifmyGraphicCapCenter
-\myGraphicCapCentertrue
+\myGraphicCapCenterfalse
+% 图注字形：
+%   \myGraphicCapBoldtrue  = 加粗（当前设置）
+%   \myGraphicCapBoldfalse = 常规字重
+% 中文走 STSong 的 AutoFakeBold 合成粗体，拉丁走 Cambria Bold。
+\newif\ifmyGraphicCapBold
+\myGraphicCapBoldtrue
 \ExplSyntaxOn
 % 插图（不浮动，紧跟正文； caption 为图注文字）
-% 图注：8bp 无衬线
+% 图注：8bp
 \NewDocumentCommand { \myGraphic } { mmm }
 {
   \par\medskip\noindent
@@ -221,6 +226,7 @@
   \end{center}
   \nopagebreak\vspace{3bp}\noindent
   {\fontsize{8bp}{10.5bp}\selectfont
+   \ifmyGraphicCapBold\bfseries\fi
    \ifmyGraphicCapCenter
      \parbox{\textwidth}{\centering #3}%
    \else

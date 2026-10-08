@@ -32,3 +32,7 @@ set PATH=D:\ProgramData\texlive\2026\bin\windows;D:\anaconda3\Scripts;%PATH%
 xelatex -shell-escape -interaction=nonstopmode main.tex
 xelatex -shell-escape -interaction=nonstopmode main.tex
 ```
+
+## 官方代码
+
+[reasoning-from-scratch](https://github.com/rasbt/reasoning-from-scratch)
