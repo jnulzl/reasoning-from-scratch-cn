@@ -5,7 +5,8 @@
 \input{book/ccs.tex}   % 导言区（模板用 \include，这里改用 \input 避免 LaTeX 警告）
 
 \begin{document}
-\begin{sloppypar}   % 避免中英混排的长串被撑出边界
+% 【不要】用 \sloppypar 包住全书：它把 \tolerance 提到 9999 + 3em \emergencystretch，
+% 中文行内遇到长 URL 时字距会被拉到 1.7em（观感稀疏）。断行兜底见 ccs.tex 的
+% \emergencystretch=1em（2026-10-09）。
 \subfile{book/index.tex}
-\end{sloppypar}
 \end{document}

@@ -86,11 +86,11 @@
 %   （0.496/0.671 em vs 原书 0.484/0.667 em）
 \setmainfont{Cambria}[BoldFont=*-Bold, ItalicFont=*-Italic, BoldItalicFont=*-BoldItalic]
 \setsansfont[BoldFont={Franklin Gothic Medium}]{Franklin Gothic Medium}   % 拉丁标题
-% 代码字体：与原书一致的 JetBrains Mono NL（无连字版），随项目放在 fonts/ 目录
-\setmonofont{JetBrainsMonoNL}[
-  Path=fonts/, Extension=.ttf,
-  UprightFont=*-Regular, BoldFont=*-Bold,
-  ItalicFont=*-Italic, BoldItalicFont=*-BoldItalic]
+% 代码字体：Consolas（Windows 自带等宽字体；文件名固定写死以避免 fontconfig 匹配歧义）
+\setmonofont{Consolas}[
+  Path=C:/Windows/Fonts/, Extension=.ttf,
+  UprightFont=consola, BoldFont=consolab,
+  ItalicFont=consolai, BoldItalicFont=consolaz]
 \newfontfamily\codehan{Microsoft YaHei}  % 备用的中英文混排字体
 % -----------------------------------------------------------------------------
 
@@ -109,6 +109,14 @@
 \setlength{\parindent}{2em}                      % 中文书籍惯例：首行缩进两字
 \setlength{\parskip}{0bp plus 0bp minus 0bp}     % 原书段落之间无额外间距
 \raggedbottom
+
+% 断行策略（2026-10-09）：【不要】用 \sloppy / \sloppypar 包全书。
+%   \sloppy 把 \tolerance 提到 9999 并加 3em 的 \emergencystretch，行内有长 URL
+%   等不可断 token 时，TeX 会把中文行内的字间胶水拉到极限——实测单字符步进最大
+%   1.76em（正常 1.0em），整行看起来字距稀疏（p310「第三，关注社交媒体平台」）。
+%   这里只给每行 1em 的应急拉伸：足以吸收行末小空隙，又不至于把中文字距拉开到
+%   可察觉的程度（37 个字间隙每个只分到约 0.03em）。
+\emergencystretch=1em
 
 % 全书正文墨色（标题、链接等会各自覆盖）
 \AtBeginDocument{\color{ink}}
@@ -480,6 +488,48 @@
   pdfkeywords={LLM, reasoning, PyTorch, 推理模型},
 }
 \renewcommand{\contentsname}{目录}
+
+% -----------------------------------------------------------------------------
+%  长串断行（2026-10-09）：URL 与行内长标识符允许折行
+% -----------------------------------------------------------------------------
+%  中文书排版惯例：URL / 代码标识符可以折行，不补连字符。之前靠全书 \sloppypar
+%  兜底，代价是中文行内字距被拉到 1.7em（观感稀疏）。这里改为给 \href 显示文本
+%  与 \texttt 参数逐字符注入断点：
+%    · 在 / . - _ ? = 之后放 \penalty0（自然断点，优先使用）；
+%    · 其余字符之间放 \penalty1000（应急断点——只在「整 token 挪走会把行留得过短
+%      而 badness 超限」时才会被选中，正常行文毫无影响）。
+%  这样 TeX 总能把行填满到正常字距，长串折到下一行，不再需要 sloppy。
+%  代码块（verbatim）有自己的断行机制，不受影响。
+\ExplSyntaxOn
+\let\myORIhref\href
+\let\myORItt\texttt
+\cs_new:Npn \my_spcmark {}                   % 空格占位符（\tl_map 会跳过空格 token，先换成 cs）
+\tl_new:N \l_myin_tl
+\tl_new:N \l_myout_tl
+\cs_new_protected:Npn \my_breakinject:n #1
+  {
+    \tl_set:Nn \l_myin_tl { #1 }
+    \tl_replace_all:Nnn \l_myin_tl { ~ } { \my_spcmark }
+    % 第一遍：每个 item（含 group、cs）之后放应急断点。
+    %   \penalty 后面紧跟 \scan_stop: 终止数字扫描——否则会把下一个 item 的
+    %   数字字符当成罚点的一部分吃掉（实测 "500.0" 被吃成 "."）。
+    \tl_clear:N \l_myout_tl
+    \tl_map_inline:Nn \l_myin_tl
+      { \tl_put_right:Nn \l_myout_tl { ##1 \penalty 1000 \scan_stop: } }
+    % 第二遍：把自然断点字符后的罚点从 1000 降到 0（优先在这些位置折行）。
+    \tl_replace_all:Nnn \l_myout_tl { / \penalty 1000 \scan_stop: } { / \penalty 0 \scan_stop: }
+    \tl_replace_all:Nnn \l_myout_tl { . \penalty 1000 \scan_stop: } { . \penalty 0 \scan_stop: }
+    \tl_replace_all:Nnn \l_myout_tl { - \penalty 1000 \scan_stop: } { - \penalty 0 \scan_stop: }
+    \tl_replace_all:Nnn \l_myout_tl { ? \penalty 1000 \scan_stop: } { ? \penalty 0 \scan_stop: }
+    \tl_replace_all:Nnn \l_myout_tl { = \penalty 1000 \scan_stop: } { = \penalty 0 \scan_stop: }
+    \tl_replace_all:Nnn \l_myout_tl { \_ \penalty 1000 \scan_stop: } { \_ \penalty 0 \scan_stop: }
+    \tl_replace_all:Nnn \l_myout_tl { \my_spcmark } { ~ }
+  }
+\RenewDocumentCommand { \href } { m m }
+  { \my_breakinject:n { #2 } \myORIhref { #1 } { \l_myout_tl } }
+\RenewDocumentCommand { \texttt } { m }
+  { \my_breakinject:n { #1 } \myORItt { \l_myout_tl } }
+\ExplSyntaxOff
 
 % 目录里的章条目也补上引导点（默认章条目是空白的，只有节条目有点）
 % 其余与 book.cls 原定义一致：加粗、段前空 0.8em、页码右对齐
