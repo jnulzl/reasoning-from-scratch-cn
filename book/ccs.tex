@@ -75,9 +75,9 @@
 \usepackage[fontsize=10bp]{fontsize}     % 正文字号（与原书一致：原书正文实测 10bp）
 \linespread{1.1250}                      % 正文行距 13bp（原书实测 10bp/13bp）1.0833(13bp)/1.1250(13.5bp)/1.1667(14bp)
 
-% 中文字体（本机未装思源宋体，用华文宋体/微软雅黑代替；都是 TrueType，可正常嵌入 PDF）
-% 备选：Source Han Serif / SourceHanSerifSC-SemiBold（模板默认）、Noto Serif CJK SC、SimSun
-\setCJKmainfont[AutoFakeBold=true,AutoFakeSlant=true]{STSong}            % 中文正文（衬线）
+% 中文字体：正文用思源宋体（Source Han Serif SC，本机已装，含 Regular+Bold 真字重）
+% 备选：Noto Serif CJK SC、STSong、SimSun
+\setCJKmainfont[AutoFakeSlant=true]{Source Han Serif SC}                 % 中文正文（衬线）
 \setCJKsansfont[AutoFakeBold=true,AutoFakeSlant=true]{Microsoft YaHei}   % 中文标题（无衬线）
 \setCJKmonofont[AutoFakeBold=true,AutoFakeSlant=true]{Microsoft YaHei}   % 代码块中的中文注释
 % 拉丁字体：原书正文 New Baskerville（商用字体）以 Cambria 代替 ——
